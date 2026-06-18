@@ -1,9 +1,7 @@
 -- kryptexHUBv2
--- Simple one-page mobile-friendly event hub.
--- Toggles: UFO, Spooky, Treasure Hunt.
+-- Simple one-page mobile-friendly hub. No place ID check.
 
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
@@ -15,6 +13,7 @@ local settings = {
 	CowName = "Cow",
 	UFOName = "UFO",
 	GhostNames = { "FastGhost", "NormalGhost", "SlowGhost" },
+	MaterialNames = { "Meteoron", "Snowflake", "Candy" },
 	DigPileName = "DigPile",
 
 	TeleportHeight = 4,
@@ -23,6 +22,9 @@ local settings = {
 	UFODelay = 0.5,
 	SpookyDelay = 0.2,
 	SpookySlapDistance = 4,
+
+	MaterialDelay = 0.6,
+	MaterialCollectDelay = 0.75,
 
 	TreasureDelay = 0.35,
 	TreasureUiWaitTime = 8,
@@ -33,16 +35,19 @@ local settings = {
 
 local autoUFO = false
 local autoSpooky = false
+local autoMaterials = false
 local autoTreasure = false
 
 local ufoLoopRunning = false
 local spookyLoopRunning = false
+local materialsLoopRunning = false
 local treasureLoopRunning = false
 local completedDigPiles = {}
 
 local statusLabel
 local ufoButton
 local spookyButton
+local materialsButton
 local treasureButton
 
 local function setStatus(message)
@@ -56,13 +61,7 @@ local function getCharacter()
 end
 
 local function getRoot()
-	local character = getCharacter()
-	return character:WaitForChild("HumanoidRootPart")
-end
-
-local function isInsideLocalCharacter(instance)
-	local character = player.Character
-	return character and instance:IsDescendantOf(character)
+	return getCharacter():WaitForChild("HumanoidRootPart")
 end
 
 local function getPivot(instance)
@@ -77,6 +76,28 @@ local function getPivot(instance)
 	if instance:IsA("Attachment") then
 		return instance.WorldCFrame
 	end
+end
+
+local function isInsideCharacter(instance)
+	local character = player.Character
+	return character and instance:IsDescendantOf(character)
+end
+
+local function isActiveWorldObject(instance)
+	if not instance or not instance.Parent or isInsideCharacter(instance) then
+		return false
+	end
+
+	local humanoid = instance:IsA("Model") and instance:FindFirstChildOfClass("Humanoid")
+	if humanoid and humanoid.Health <= 0 then
+		return false
+	end
+
+	if instance:GetAttribute("Active") == false or instance:GetAttribute("Dead") == true then
+		return false
+	end
+
+	return getPivot(instance) ~= nil
 end
 
 local function teleportTo(instance, height)
@@ -108,32 +129,16 @@ local function teleportBeside(instance, distance, height)
 	return true
 end
 
-local function isWorldObjectActive(instance)
-	if not instance or not instance.Parent or isInsideLocalCharacter(instance) then
-		return false
-	end
-
-	local humanoid = instance:IsA("Model") and instance:FindFirstChildOfClass("Humanoid")
-	if humanoid and humanoid.Health <= 0 then
-		return false
-	end
-
-	if instance:GetAttribute("Active") == false or instance:GetAttribute("Dead") == true then
-		return false
-	end
-
-	return getPivot(instance) ~= nil
-end
-
-local function getNearestNamedObject(name)
+local function getNearestNamed(name, rootObject)
 	local root = getRoot()
+	local searchRoot = rootObject or Workspace
 	local nearest
 	local nearestDistance = math.huge
 
-	for _, instance in ipairs(Workspace:GetDescendants()) do
+	for _, instance in ipairs(searchRoot:GetDescendants()) do
 		local targetType = instance:IsA("Model") or instance:IsA("BasePart")
 
-		if targetType and instance.Name == name and isWorldObjectActive(instance) then
+		if targetType and instance.Name == name and isActiveWorldObject(instance) then
 			local pivot = getPivot(instance)
 
 			if pivot then
@@ -150,15 +155,16 @@ local function getNearestNamedObject(name)
 	return nearest
 end
 
-local function getNearestNamedObjectFromList(names)
+local function getNearestFromNames(names, rootObject)
 	local root = getRoot()
+	local searchRoot = rootObject or Workspace
 	local nearest
 	local nearestDistance = math.huge
 
-	for _, instance in ipairs(Workspace:GetDescendants()) do
+	for _, instance in ipairs(searchRoot:GetDescendants()) do
 		local targetType = instance:IsA("Model") or instance:IsA("BasePart")
 
-		if targetType and isWorldObjectActive(instance) then
+		if targetType and isActiveWorldObject(instance) then
 			for _, name in ipairs(names) do
 				if instance.Name == name then
 					local pivot = getPivot(instance)
@@ -182,14 +188,13 @@ local function getNearestNamedObjectFromList(names)
 end
 
 local function getPromptPosition(prompt)
-	local parent = prompt.Parent
-	local pivot = parent and getPivot(parent)
+	local pivot = prompt.Parent and getPivot(prompt.Parent)
 	return pivot and pivot.Position
 end
 
 local function getNearestPrompt(holder)
 	local root = getRoot()
-	local nearestPrompt
+	local nearest
 	local nearestDistance = math.huge
 
 	for _, descendant in ipairs(holder:GetDescendants()) do
@@ -201,13 +206,13 @@ local function getNearestPrompt(holder)
 
 				if distance < nearestDistance then
 					nearestDistance = distance
-					nearestPrompt = descendant
+					nearest = descendant
 				end
 			end
 		end
 	end
 
-	return nearestPrompt
+	return nearest
 end
 
 local function holdPrompt(prompt)
@@ -231,7 +236,7 @@ local function holdPrompt(prompt)
 	return success
 end
 
-local function getToolsInBackpack()
+local function getBackpackTools()
 	local tools = {}
 
 	for _, child in ipairs(backpack:GetChildren()) do
@@ -244,10 +249,10 @@ local function getToolsInBackpack()
 end
 
 local function getSlotTool(slotNumber)
-	return getToolsInBackpack()[slotNumber]
+	return getBackpackTools()[slotNumber]
 end
 
-local function toolNameHas(tool, fragments)
+local function toolNameContains(tool, fragments)
 	local lowerName = string.lower(tool.Name)
 
 	for _, fragment in ipairs(fragments) do
@@ -259,22 +264,22 @@ local function toolNameHas(tool, fragments)
 	return false
 end
 
-local function findEquippedToolMatching(fragments)
+local function findEquippedTool(fragments)
 	local character = player.Character
 	if not character then
 		return nil
 	end
 
 	for _, child in ipairs(character:GetChildren()) do
-		if child:IsA("Tool") and toolNameHas(child, fragments) then
+		if child:IsA("Tool") and toolNameContains(child, fragments) then
 			return child
 		end
 	end
 end
 
-local function findBackpackToolMatching(fragments)
-	for _, tool in ipairs(getToolsInBackpack()) do
-		if toolNameHas(tool, fragments) then
+local function findBackpackTool(fragments)
+	for _, tool in ipairs(getBackpackTools()) do
+		if toolNameContains(tool, fragments) then
 			return tool
 		end
 	end
@@ -285,13 +290,12 @@ local function equipTool(tool)
 		return nil
 	end
 
-	local character = getCharacter()
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local humanoid = getCharacter():FindFirstChildOfClass("Humanoid")
 	if not humanoid then
 		return nil
 	end
 
-	if tool.Parent ~= character then
+	if tool.Parent ~= player.Character then
 		humanoid:EquipTool(tool)
 		task.wait(0.1)
 	end
@@ -309,7 +313,7 @@ local function activateTool(tool)
 	end)
 end
 
-local function updateToggleButtons()
+local function updateButtons()
 	if ufoButton then
 		ufoButton.Text = autoUFO and "UFO: ON" or "UFO: OFF"
 		ufoButton.BackgroundColor3 = autoUFO and Color3.fromRGB(34, 126, 76) or Color3.fromRGB(126, 47, 47)
@@ -320,14 +324,19 @@ local function updateToggleButtons()
 		spookyButton.BackgroundColor3 = autoSpooky and Color3.fromRGB(34, 126, 76) or Color3.fromRGB(126, 47, 47)
 	end
 
+	if materialsButton then
+		materialsButton.Text = autoMaterials and "Materials: ON" or "Materials: OFF"
+		materialsButton.BackgroundColor3 = autoMaterials and Color3.fromRGB(34, 126, 76) or Color3.fromRGB(126, 47, 47)
+	end
+
 	if treasureButton then
 		treasureButton.Text = autoTreasure and "Treasure Hunt: ON" or "Treasure Hunt: OFF"
 		treasureButton.BackgroundColor3 = autoTreasure and Color3.fromRGB(34, 126, 76) or Color3.fromRGB(126, 47, 47)
 	end
 end
 
-local function doUFORun()
-	local cow = getNearestNamedObject(settings.CowName)
+local function doUFO()
+	local cow = getNearestNamed(settings.CowName)
 	if not cow then
 		setStatus("UFO: waiting for Cow.")
 		return false
@@ -338,14 +347,14 @@ local function doUFORun()
 	task.wait(settings.ActionDelay)
 
 	local cowPrompt = getNearestPrompt(cow)
-	if cowPrompt then
-		holdPrompt(cowPrompt)
-	else
+	if not cowPrompt then
 		setStatus("UFO: Cow has no prompt.")
 		return false
 	end
 
-	local ufo = getNearestNamedObject(settings.UFOName)
+	holdPrompt(cowPrompt)
+
+	local ufo = getNearestNamed(settings.UFOName)
 	if not ufo then
 		setStatus("UFO: waiting for UFO.")
 		return false
@@ -365,7 +374,7 @@ local function doUFORun()
 	return true
 end
 
-local function startUFOFarm()
+local function startUFO()
 	if ufoLoopRunning then
 		return
 	end
@@ -374,7 +383,7 @@ local function startUFOFarm()
 
 	task.spawn(function()
 		while autoUFO do
-			doUFORun()
+			doUFO()
 			task.wait(settings.UFODelay)
 		end
 
@@ -384,10 +393,7 @@ local function startUFOFarm()
 end
 
 local function equipSlapper()
-	local tool = findEquippedToolMatching({ "slap" })
-		or getSlotTool(2)
-		or findBackpackToolMatching({ "slap" })
-
+	local tool = findEquippedTool({ "slap" }) or getSlotTool(2) or findBackpackTool({ "slap" })
 	if not tool then
 		setStatus("Spooky: put the slapper in slot 2.")
 		return nil
@@ -396,8 +402,8 @@ local function equipSlapper()
 	return equipTool(tool)
 end
 
-local function doSpookyRun()
-	local ghost = getNearestNamedObjectFromList(settings.GhostNames)
+local function doSpooky()
+	local ghost = getNearestFromNames(settings.GhostNames)
 	if not ghost then
 		setStatus("Spooky: waiting for ghosts.")
 		return false
@@ -416,7 +422,7 @@ local function doSpookyRun()
 	return true
 end
 
-local function startSpookyFarm()
+local function startSpooky()
 	if spookyLoopRunning then
 		return
 	end
@@ -425,12 +431,61 @@ local function startSpookyFarm()
 
 	task.spawn(function()
 		while autoSpooky do
-			doSpookyRun()
+			doSpooky()
 			task.wait(settings.SpookyDelay)
 		end
 
 		spookyLoopRunning = false
 		setStatus("Spooky stopped.")
+	end)
+end
+
+local function getWorkshop()
+	return Workspace:FindFirstChild("Workshop", true) or Workspace:FindFirstChild("WorkShop", true)
+end
+
+local function getNearestMaterial()
+	local workshop = getWorkshop()
+	local material = workshop and getNearestFromNames(settings.MaterialNames, workshop)
+	return material or getNearestFromNames(settings.MaterialNames)
+end
+
+local function doMaterials()
+	local material = getNearestMaterial()
+	if not material then
+		setStatus("Materials: waiting for Meteoron, Snowflake, or Candy.")
+		return false
+	end
+
+	setStatus("Materials: collecting " .. material.Name .. ".")
+	teleportTo(material, 3)
+	task.wait(settings.MaterialCollectDelay)
+
+	local prompt = getNearestPrompt(material)
+	if prompt then
+		holdPrompt(prompt)
+	else
+		task.wait(settings.MaterialCollectDelay)
+	end
+
+	return true
+end
+
+local function startMaterials()
+	if materialsLoopRunning then
+		return
+	end
+
+	materialsLoopRunning = true
+
+	task.spawn(function()
+		while autoMaterials do
+			doMaterials()
+			task.wait(settings.MaterialDelay)
+		end
+
+		materialsLoopRunning = false
+		setStatus("Materials stopped.")
 	end)
 end
 
@@ -442,14 +497,13 @@ local function getNearestDigPile()
 	local root = getRoot()
 	local nearest
 	local nearestDistance = math.huge
-	local eventsFolder = getEventsFolder()
 
-	for _, instance in ipairs(eventsFolder:GetDescendants()) do
+	for _, instance in ipairs(getEventsFolder():GetDescendants()) do
 		local targetType = instance:IsA("Model") or instance:IsA("BasePart")
 		local completedAt = completedDigPiles[instance]
 		local recentlyDone = completedAt and os.clock() - completedAt < settings.TreasurePileCooldown
 
-		if targetType and instance.Name == settings.DigPileName and not recentlyDone and isWorldObjectActive(instance) then
+		if targetType and instance.Name == settings.DigPileName and not recentlyDone and isActiveWorldObject(instance) then
 			local pivot = getPivot(instance)
 
 			if pivot then
@@ -467,8 +521,8 @@ local function getNearestDigPile()
 end
 
 local function equipDigTool()
-	local tool = findEquippedToolMatching({ "dig", "shovel", "spade", "trowel" })
-		or findBackpackToolMatching({ "dig", "shovel", "spade", "trowel" })
+	local tool = findEquippedTool({ "dig", "shovel", "spade", "trowel" })
+		or findBackpackTool({ "dig", "shovel", "spade", "trowel" })
 		or getSlotTool(1)
 
 	if not tool then
@@ -487,7 +541,6 @@ local function getDigEventGui()
 	local main = playerGui:FindFirstChild("Main")
 	local frames = main and main:FindFirstChild("Frames")
 	local digEvent = frames and frames:FindFirstChild("DigEvent")
-
 	return digEvent or playerGui:FindFirstChild("DigEvent", true)
 end
 
@@ -506,34 +559,30 @@ local function isGuiVisible(guiObject)
 end
 
 local function getGuiColor(guiObject)
-	if not guiObject:IsA("GuiObject") then
-		return nil
-	end
-
-	local imageSuccess, imageTransparency = pcall(function()
+	local imageOk, imageTransparency = pcall(function()
 		return guiObject.ImageTransparency
 	end)
 
-	if imageSuccess and imageTransparency < 0.95 then
-		local colorSuccess, color = pcall(function()
+	if imageOk and imageTransparency < 0.95 then
+		local colorOk, color = pcall(function()
 			return guiObject.ImageColor3
 		end)
 
-		if colorSuccess then
+		if colorOk then
 			return color
 		end
 	end
 
-	local backgroundSuccess, backgroundTransparency = pcall(function()
+	local bgOk, bgTransparency = pcall(function()
 		return guiObject.BackgroundTransparency
 	end)
 
-	if not backgroundSuccess or backgroundTransparency < 0.95 then
-		local colorSuccess, color = pcall(function()
+	if not bgOk or bgTransparency < 0.95 then
+		local colorOk, color = pcall(function()
 			return guiObject.BackgroundColor3
 		end)
 
-		if colorSuccess then
+		if colorOk then
 			return color
 		end
 	end
@@ -542,25 +591,13 @@ end
 local function isGreenGui(guiObject)
 	local color = getGuiColor(guiObject)
 	local size = guiObject.AbsoluteSize
-
-	return color
-		and color.G > 0.45
-		and color.G > color.R * 1.25
-		and color.G > color.B * 1.25
-		and size.X > 4
-		and size.Y > 4
+	return color and color.G > 0.45 and color.G > color.R * 1.25 and color.G > color.B * 1.25 and size.X > 4 and size.Y > 4
 end
 
 local function isWhiteGui(guiObject)
 	local color = getGuiColor(guiObject)
 	local size = guiObject.AbsoluteSize
-
-	return color
-		and color.R > 0.82
-		and color.G > 0.82
-		and color.B > 0.82
-		and size.X > 1
-		and size.Y > 1
+	return color and color.R > 0.82 and color.G > 0.82 and color.B > 0.82 and size.X > 1 and size.Y > 1
 end
 
 local function findTreasurePieces()
@@ -586,9 +623,7 @@ local function findTreasurePieces()
 
 			if isWhiteGui(guiObject) then
 				local lowerName = string.lower(guiObject.Name)
-				local thinness = math.min(size.X, size.Y)
-				local bonus = string.find(lowerName, "line") and -10 or 0
-				local score = thinness + bonus
+				local score = math.min(size.X, size.Y) + (string.find(lowerName, "line") and -10 or 0)
 
 				if score < whiteScore then
 					whiteScore = score
@@ -614,7 +649,6 @@ local function lineInsideGreen(greenBar, whiteLine)
 
 	local lineCenterX = linePosition.X + lineSize.X / 2
 	local lineCenterY = linePosition.Y + lineSize.Y / 2
-
 	local insideX = lineCenterX >= greenPosition.X - padding and lineCenterX <= greenPosition.X + greenSize.X + padding
 	local insideY = lineCenterY >= greenPosition.Y - padding and lineCenterY <= greenPosition.Y + greenSize.Y + padding
 
@@ -638,7 +672,7 @@ local function runTreasureMinigame()
 
 			if greenBar and whiteLine then
 				if lineInsideGreen(greenBar, whiteLine) then
-					clicks = clicks + 1
+					clicks += 1
 					setStatus("Treasure: keeping line green. Clicks: " .. clicks)
 					activateDigTool()
 					task.wait(settings.TreasureHitDelay)
@@ -663,7 +697,7 @@ local function runTreasureMinigame()
 	return sawUi
 end
 
-local function doTreasureRun()
+local function doTreasure()
 	local digPile = getNearestDigPile()
 	if not digPile then
 		setStatus("Treasure: waiting for DigPile in Workspace.Events.")
@@ -691,7 +725,7 @@ local function doTreasureRun()
 	return completed
 end
 
-local function startTreasureFarm()
+local function startTreasure()
 	if treasureLoopRunning then
 		return
 	end
@@ -700,7 +734,7 @@ local function startTreasureFarm()
 
 	task.spawn(function()
 		while autoTreasure do
-			doTreasureRun()
+			doTreasure()
 			task.wait(settings.TreasureDelay)
 		end
 
@@ -713,21 +747,26 @@ local function createCorner(parent, radius)
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, radius)
 	corner.Parent = parent
-	return corner
 end
 
-local function createStroke(parent, color)
+local function createStroke(parent)
 	local stroke = Instance.new("UIStroke")
-	stroke.Color = color
+	stroke.Color = Color3.fromRGB(80, 85, 105)
 	stroke.Thickness = 1
 	stroke.Transparency = 0.35
 	stroke.Parent = parent
-	return stroke
 end
 
 local tapButtons = {}
 
-local function isGuiActuallyVisible(guiObject)
+local function pointInside(guiObject, point)
+	local position = guiObject.AbsolutePosition
+	local size = guiObject.AbsoluteSize
+	local padding = 10
+	return point.X >= position.X - padding and point.X <= position.X + size.X + padding and point.Y >= position.Y - padding and point.Y <= position.Y + size.Y + padding
+end
+
+local function guiVisible(guiObject)
 	local current = guiObject
 
 	while current and current:IsA("GuiObject") do
@@ -739,17 +778,6 @@ local function isGuiActuallyVisible(guiObject)
 	end
 
 	return true
-end
-
-local function pointInsideGui(guiObject, point)
-	local position = guiObject.AbsolutePosition
-	local size = guiObject.AbsoluteSize
-	local padding = 10
-
-	return point.X >= position.X - padding
-		and point.X <= position.X + size.X + padding
-		and point.Y >= position.Y - padding
-		and point.Y <= position.Y + size.Y + padding
 end
 
 local function connectTap(button, callback)
@@ -796,28 +824,28 @@ end
 
 local function createButton(parent, text, callback)
 	local button = Instance.new("TextButton")
-	button.Size = UDim2.new(1, 0, 0, 44)
+	button.Size = UDim2.new(1, 0, 0, 40)
 	button.BackgroundColor3 = Color3.fromRGB(126, 47, 47)
 	button.BorderSizePixel = 0
 	button.Font = Enum.Font.GothamBold
 	button.Text = text
 	button.TextColor3 = Color3.fromRGB(255, 255, 255)
-	button.TextSize = 15
+	button.TextSize = 14
 	button.AutoButtonColor = true
 	button.Parent = parent
 
 	createCorner(button, 7)
-	createStroke(button, Color3.fromRGB(80, 85, 105))
+	createStroke(button)
 	connectTap(button, callback)
 	return button
 end
 
-local function makeDraggable(frame, dragHandle)
+local function makeDraggable(frame, handle)
 	local dragging = false
 	local dragStart
 	local startPosition
 
-	dragHandle.InputBegan:Connect(function(input)
+	handle.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
 			dragStart = input.Position
@@ -832,27 +860,16 @@ local function makeDraggable(frame, dragHandle)
 	end)
 
 	UserInputService.InputChanged:Connect(function(input)
-		if not dragging then
-			return
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			frame.Position = UDim2.new(startPosition.X.Scale, startPosition.X.Offset + delta.X, startPosition.Y.Scale, startPosition.Y.Offset + delta.Y)
 		end
-
-		if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then
-			return
-		end
-
-		local delta = input.Position - dragStart
-		frame.Position = UDim2.new(
-			startPosition.X.Scale,
-			startPosition.X.Offset + delta.X,
-			startPosition.Y.Scale,
-			startPosition.Y.Offset + delta.Y
-		)
 	end)
 end
 
-local existingGui = playerGui:FindFirstChild("kryptexHUBv2")
-if existingGui then
-	existingGui:Destroy()
+local oldGui = playerGui:FindFirstChild("kryptexHUBv2")
+if oldGui then
+	oldGui:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
@@ -866,9 +883,7 @@ screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = playerGui
 
 UserInputService.InputEnded:Connect(function(input)
-	local isTap = input.UserInputType == Enum.UserInputType.MouseButton1
-		or input.UserInputType == Enum.UserInputType.Touch
-
+	local isTap = input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch
 	if not isTap or not screenGui.Parent then
 		return
 	end
@@ -879,11 +894,7 @@ UserInputService.InputEnded:Connect(function(input)
 		local item = tapButtons[index]
 		local button = item.Button
 
-		if button
-			and button.Parent
-			and button:IsDescendantOf(screenGui)
-			and isGuiActuallyVisible(button)
-			and pointInsideGui(button, point) then
+		if button and button.Parent and button:IsDescendantOf(screenGui) and guiVisible(button) and pointInside(button, point) then
 			item.Callback()
 			return
 		end
@@ -892,7 +903,7 @@ end)
 
 local isTouch = UserInputService.TouchEnabled
 local hubWidth = isTouch and 280 or 310
-local hubHeight = 280
+local hubHeight = 315
 
 local main = Instance.new("Frame")
 main.Size = UDim2.fromOffset(hubWidth, hubHeight)
@@ -903,7 +914,7 @@ main.Active = true
 main.Parent = screenGui
 
 createCorner(main, 8)
-createStroke(main, Color3.fromRGB(95, 100, 130))
+createStroke(main)
 
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1, 0, 0, 42)
@@ -980,11 +991,11 @@ createCorner(statusLabel, 6)
 
 ufoButton = createButton(body, "UFO: OFF", function()
 	autoUFO = not autoUFO
-	updateToggleButtons()
+	updateButtons()
 
 	if autoUFO then
 		setStatus("UFO started.")
-		startUFOFarm()
+		startUFO()
 	else
 		setStatus("Stopping UFO.")
 	end
@@ -992,23 +1003,35 @@ end)
 
 spookyButton = createButton(body, "Spooky: OFF", function()
 	autoSpooky = not autoSpooky
-	updateToggleButtons()
+	updateButtons()
 
 	if autoSpooky then
 		setStatus("Spooky started.")
-		startSpookyFarm()
+		startSpooky()
 	else
 		setStatus("Stopping Spooky.")
 	end
 end)
 
+materialsButton = createButton(body, "Materials: OFF", function()
+	autoMaterials = not autoMaterials
+	updateButtons()
+
+	if autoMaterials then
+		setStatus("Materials started.")
+		startMaterials()
+	else
+		setStatus("Stopping Materials.")
+	end
+end)
+
 treasureButton = createButton(body, "Treasure Hunt: OFF", function()
 	autoTreasure = not autoTreasure
-	updateToggleButtons()
+	updateButtons()
 
 	if autoTreasure then
 		setStatus("Treasure Hunt started.")
-		startTreasureFarm()
+		startTreasure()
 	else
 		setStatus("Stopping Treasure Hunt.")
 	end
@@ -1019,6 +1042,7 @@ local minimized = false
 connectTap(closeButton, function()
 	autoUFO = false
 	autoSpooky = false
+	autoMaterials = false
 	autoTreasure = false
 	screenGui:Destroy()
 end)
@@ -1031,4 +1055,4 @@ connectTap(minimizeButton, function()
 end)
 
 makeDraggable(main, titleBar)
-updateToggleButtons()
+updateButtons()
