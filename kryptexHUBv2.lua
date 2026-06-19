@@ -44,38 +44,31 @@ local settings = {
 	MaterialCollectDelay = 0.25,
 	MaterialHoverHeight = 1.6,
 
-	CoinCollectorName = "CoinCollector",
-	CoinScanDelay = 1,
-	CoinCollectDelay = 0.35,
-	CoinReturnDelay = 0.2,
-
-	TreasureDelay = 0.08,
+	TreasureDelay = 0.01,
 	TreasureUiWaitTime = 8,
+	TreasureUiPollDelay = 0.03,
+	TreasureHoverHeight = 0.5,
 	TreasurePileCooldown = 35,
 }
 
 local autoUFO = false
 local autoSpooky = false
 local autoMaterials = false
-local autoCoins = false
 local autoTreasure = false
 
 local ufoLoopRunning = false
 local spookyLoopRunning = false
 local materialsLoopRunning = false
-local coinsLoopRunning = false
 local treasureLoopRunning = false
 local spookySlotSelected = false
 local currentSpookyTarget
 local failedCows = {}
 local completedDigPiles = {}
-local cachedPlayerPlot
 
 local statusLabel
 local ufoButton
 local spookyButton
 local materialsButton
-local coinsButton
 local treasureButton
 
 local function setStatus(message)
@@ -103,20 +96,6 @@ local function getPivot(instance)
 
 	if instance:IsA("Attachment") then
 		return instance.WorldCFrame
-	end
-end
-
-local function getTeleportTarget(instance)
-	if getPivot(instance) then
-		return instance
-	end
-
-	for _, descendant in ipairs(instance:GetDescendants()) do
-		if descendant:IsA("Model") or descendant:IsA("BasePart") or descendant:IsA("Attachment") then
-			if getPivot(descendant) then
-				return descendant
-			end
-		end
 	end
 end
 
@@ -510,11 +489,6 @@ local function updateButtons()
 		materialsButton.BackgroundColor3 = autoMaterials and Color3.fromRGB(34, 126, 76) or Color3.fromRGB(126, 47, 47)
 	end
 
-	if coinsButton then
-		coinsButton.Text = autoCoins and "Auto Coins: ON" or "Auto Coins: OFF"
-		coinsButton.BackgroundColor3 = autoCoins and Color3.fromRGB(34, 126, 76) or Color3.fromRGB(126, 47, 47)
-	end
-
 	if treasureButton then
 		treasureButton.Text = autoTreasure and "Treasure Hunt: ON" or "Treasure Hunt: OFF"
 		treasureButton.BackgroundColor3 = autoTreasure and Color3.fromRGB(34, 126, 76) or Color3.fromRGB(126, 47, 47)
@@ -796,313 +770,6 @@ local function startMaterials()
 	end)
 end
 
-local function getPlotsFolder()
-	local scriptable = Workspace:FindFirstChild("Scriptable")
-	return scriptable and scriptable:FindFirstChild("Plots")
-end
-
-local function getPlotFromInstance(instance, plotsFolder)
-	local current = instance
-
-	while current and current.Parent do
-		if current.Parent == plotsFolder then
-			return current
-		end
-
-		current = current.Parent
-	end
-end
-
-local function getPlotFromReference(value, plotsFolder)
-	if not plotsFolder or value == nil then
-		return nil
-	end
-
-	if typeof(value) == "Instance" then
-		return getPlotFromInstance(value, plotsFolder)
-	end
-
-	local plot = plotsFolder:FindFirstChild(tostring(value))
-	if plot then
-		return plot
-	end
-end
-
-local function valueMatchesPlayer(value)
-	local valueType = typeof(value)
-
-	if valueType == "Instance" then
-		return value == player or value.Name == player.Name
-	end
-
-	if valueType == "number" then
-		return value == player.UserId
-	end
-
-	if valueType == "string" then
-		local lowerValue = string.lower(value)
-		local lowerName = string.lower(player.Name)
-		local lowerDisplay = string.lower(player.DisplayName)
-
-		return lowerValue == lowerName
-			or lowerValue == lowerDisplay
-			or string.find(lowerValue, lowerName, 1, true) ~= nil
-			or (lowerDisplay ~= "" and string.find(lowerValue, lowerDisplay, 1, true) ~= nil)
-	end
-
-	return false
-end
-
-local function nameLooksLikeOwner(name)
-	local lowerName = string.lower(name)
-	return string.find(lowerName, "owner", 1, true)
-		or string.find(lowerName, "player", 1, true)
-		or string.find(lowerName, "user", 1, true)
-		or string.find(lowerName, "claim", 1, true)
-end
-
-local function getPlayerPlotFromPlayerData(plotsFolder)
-	local containers = { player, player.Character }
-
-	for _, container in ipairs(containers) do
-		if container then
-			for key, value in pairs(container:GetAttributes()) do
-				if string.find(string.lower(key), "plot", 1, true) then
-					local plot = getPlotFromReference(value, plotsFolder)
-					if plot then
-						return plot
-					end
-				end
-			end
-
-			for _, child in ipairs(container:GetChildren()) do
-				if string.find(string.lower(child.Name), "plot", 1, true) then
-					local ok, value = pcall(function()
-						return child.Value
-					end)
-
-					local plot = ok and getPlotFromReference(value, plotsFolder)
-					if plot then
-						return plot
-					end
-
-					plot = getPlotFromReference(child, plotsFolder)
-					if plot then
-						return plot
-					end
-				end
-			end
-		end
-	end
-end
-
-local function plotBelongsToPlayer(plot)
-	for key, value in pairs(plot:GetAttributes()) do
-		if nameLooksLikeOwner(key) and valueMatchesPlayer(value) then
-			return true
-		end
-	end
-
-	for _, descendant in ipairs(plot:GetDescendants()) do
-		if nameLooksLikeOwner(descendant.Name) then
-			local ok, value = pcall(function()
-				return descendant.Value
-			end)
-
-			if ok and valueMatchesPlayer(value) then
-				return true
-			end
-		end
-
-		local ok, text = pcall(function()
-			return descendant.Text
-		end)
-
-		if ok and type(text) == "string" and valueMatchesPlayer(text) then
-			return true
-		end
-	end
-
-	return false
-end
-
-local function getPlayerPlot()
-	local plotsFolder = getPlotsFolder()
-	if not plotsFolder then
-		return nil
-	end
-
-	if cachedPlayerPlot and cachedPlayerPlot.Parent and cachedPlayerPlot:IsDescendantOf(plotsFolder) then
-		return cachedPlayerPlot
-	end
-
-	local referencedPlot = getPlayerPlotFromPlayerData(plotsFolder)
-	if referencedPlot then
-		cachedPlayerPlot = referencedPlot
-		return referencedPlot
-	end
-
-	for _, plot in ipairs(plotsFolder:GetChildren()) do
-		if plotBelongsToPlayer(plot) then
-			cachedPlayerPlot = plot
-			return plot
-		end
-	end
-end
-
-local function textSaysCollectReady(text)
-	local lowerText = string.lower(tostring(text or ""))
-
-	if string.find(lowerText, "not full", 1, true) or string.find(lowerText, "empty", 1, true) then
-		return false
-	end
-
-	local firstNumber, secondNumber = string.match(lowerText, "([%d%.]+)%D*/%D*([%d%.]+)")
-	local amount = firstNumber and tonumber(firstNumber)
-	local capacity = secondNumber and tonumber(secondNumber)
-
-	if amount and capacity and capacity > 0 then
-		return amount >= capacity
-	end
-
-	return string.find(lowerText, "full", 1, true)
-		or string.find(lowerText, "ready", 1, true)
-		or string.find(lowerText, "collect", 1, true)
-end
-
-local function readNumber(value)
-	local valueType = typeof(value)
-
-	if valueType == "number" then
-		return value
-	end
-
-	if valueType == "string" then
-		return tonumber(value)
-	end
-end
-
-local function coinCollectorIsFull(collector)
-	local amount
-	local capacity
-
-	local function checkNamedValue(name, value)
-		local lowerName = string.lower(name)
-		local numberValue = readNumber(value)
-
-		if nameLooksLikeOwner(name) then
-			return
-		end
-
-		if textSaysCollectReady(tostring(value)) then
-			return true
-		end
-
-		if numberValue then
-			if string.find(lowerName, "max", 1, true) or string.find(lowerName, "capacity", 1, true) or string.find(lowerName, "limit", 1, true) then
-				capacity = math.max(capacity or 0, numberValue)
-			elseif string.find(lowerName, "coin", 1, true) or string.find(lowerName, "amount", 1, true) or string.find(lowerName, "stored", 1, true) or string.find(lowerName, "cash", 1, true) or lowerName == "value" then
-				amount = math.max(amount or 0, numberValue)
-			end
-		end
-	end
-
-	for key, value in pairs(collector:GetAttributes()) do
-		local lowerKey = string.lower(key)
-
-		if (string.find(lowerKey, "full", 1, true) or string.find(lowerKey, "ready", 1, true) or string.find(lowerKey, "collect", 1, true)) and value == true then
-			return true
-		end
-
-		if checkNamedValue(key, value) then
-			return true
-		end
-	end
-
-	for _, descendant in ipairs(collector:GetDescendants()) do
-		local ok, value = pcall(function()
-			return descendant.Value
-		end)
-
-		if ok and checkNamedValue(descendant.Name, value) then
-			return true
-		end
-
-		local textOk, text = pcall(function()
-			return descendant.Text
-		end)
-
-		if textOk and type(text) == "string" and textSaysCollectReady(text) then
-			return true
-		end
-
-		if descendant:IsA("ProximityPrompt") and descendant.Enabled then
-			if textSaysCollectReady(descendant.ActionText) or textSaysCollectReady(descendant.ObjectText) then
-				return true
-			end
-		end
-	end
-
-	return amount ~= nil and capacity ~= nil and capacity > 0 and amount >= capacity
-end
-
-local function doCoins()
-	local plot = getPlayerPlot()
-	if not plot then
-		setStatus("Coins: could not find your plot yet.")
-		return false
-	end
-
-	local collector = plot:FindFirstChild(settings.CoinCollectorName, true)
-	if not collector then
-		setStatus("Coins: no CoinCollector found in your plot.")
-		return false
-	end
-
-	if not coinCollectorIsFull(collector) then
-		setStatus("Coins: collector is not full yet.")
-		return false
-	end
-
-	local returnCFrame = getRoot().CFrame
-	setStatus("Coins: collector full, collecting.")
-	teleportTo(getTeleportTarget(collector) or collector, 3)
-	task.wait(settings.ActionDelay)
-
-	local prompt = getNearestPrompt(collector)
-	if prompt then
-		holdPrompt(prompt)
-	else
-		task.wait(settings.CoinCollectDelay)
-	end
-
-	task.wait(settings.CoinReturnDelay)
-
-	if autoCoins and returnCFrame then
-		getRoot().CFrame = returnCFrame
-	end
-
-	return true
-end
-
-local function startCoins()
-	if coinsLoopRunning then
-		return
-	end
-
-	coinsLoopRunning = true
-
-	task.spawn(function()
-		while autoCoins do
-			doCoins()
-			task.wait(settings.CoinScanDelay)
-		end
-
-		coinsLoopRunning = false
-		setStatus("Auto Coins stopped.")
-	end)
-end
-
 local function getEventsFolder()
 	return Workspace:FindFirstChild("Events") or Workspace:FindFirstChild("Event") or Workspace
 end
@@ -1183,7 +850,7 @@ local function runTreasureMinigame()
 		if digUiOpen then
 			sawUi = true
 			setStatus("Treasure: your turn to click. Waiting for this pile to finish.")
-			task.wait(0.25)
+			task.wait(settings.TreasureUiPollDelay)
 		elseif sawUi then
 			setStatus("Treasure: pile finished.")
 			return true
@@ -1191,7 +858,7 @@ local function runTreasureMinigame()
 			setStatus("Treasure: UI did not open, trying the next pile.")
 			return false
 		else
-			task.wait(0.1)
+			task.wait(settings.TreasureUiPollDelay)
 		end
 	end
 
@@ -1206,12 +873,14 @@ local function doTreasure()
 	end
 
 	setStatus("Treasure: moving to DigPile and starting it.")
-	teleportTo(digPile, 3)
+	teleportTo(digPile, settings.TreasureHoverHeight)
 	task.wait(settings.ActionDelay)
 
 	local prompt = getNearestPrompt(digPile)
 	if prompt then
-		holdPrompt(prompt)
+		teleportTo(prompt.Parent or digPile, settings.TreasureHoverHeight)
+		task.wait(settings.ActionDelay)
+		triggerPrompt(prompt)
 	else
 		activateDigTool()
 	end
@@ -1404,7 +1073,7 @@ end)
 
 local isTouch = UserInputService.TouchEnabled
 local hubWidth = isTouch and 280 or 310
-local hubHeight = 365
+local hubHeight = 315
 
 local main = Instance.new("Frame")
 main.Size = UDim2.fromOffset(hubWidth, hubHeight)
@@ -1526,18 +1195,6 @@ materialsButton = createButton(body, "Materials: OFF", function()
 	end
 end)
 
-coinsButton = createButton(body, "Auto Coins: OFF", function()
-	autoCoins = not autoCoins
-	updateButtons()
-
-	if autoCoins then
-		setStatus("Auto Coins started.")
-		startCoins()
-	else
-		setStatus("Stopping Auto Coins.")
-	end
-end)
-
 treasureButton = createButton(body, "Treasure Hunt: OFF", function()
 	autoTreasure = not autoTreasure
 	updateButtons()
@@ -1556,7 +1213,6 @@ connectTap(closeButton, function()
 	autoUFO = false
 	autoSpooky = false
 	autoMaterials = false
-	autoCoins = false
 	autoTreasure = false
 	screenGui:Destroy()
 end)
