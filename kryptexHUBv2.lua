@@ -40,11 +40,6 @@ local settings = {
 
 	TreasureDelay = 0.08,
 	TreasureUiWaitTime = 8,
-	TreasureLineCheckDelay = 0.015,
-	TreasureHitDelay = 0.08,
-	TreasureNearPadding = 0,
-	TreasureLeftGuard = 0.3,
-	TreasureRightGuard = 0.72,
 	TreasurePileCooldown = 35,
 }
 
@@ -669,260 +664,23 @@ local function isGuiVisible(guiObject)
 	return true
 end
 
-local function getGuiColor(guiObject)
-	local imageOk, imageTransparency = pcall(function()
-		return guiObject.ImageTransparency
-	end)
-
-	if imageOk and imageTransparency < 0.95 then
-		local colorOk, color = pcall(function()
-			return guiObject.ImageColor3
-		end)
-
-		if colorOk then
-			return color
-		end
-	end
-
-	local bgOk, bgTransparency = pcall(function()
-		return guiObject.BackgroundTransparency
-	end)
-
-	if not bgOk or bgTransparency < 0.95 then
-		local colorOk, color = pcall(function()
-			return guiObject.BackgroundColor3
-		end)
-
-		if colorOk then
-			return color
-		end
-	end
-end
-
-local function isGreenGui(guiObject)
-	local color = getGuiColor(guiObject)
-	local size = guiObject.AbsoluteSize
-	local lowerName = string.lower(guiObject.Name)
-	local nameMatch = string.find(lowerName, "green")
-		or string.find(lowerName, "target")
-		or string.find(lowerName, "zone")
-		or string.find(lowerName, "safe")
-
-	local colorMatch = color
-		and color.G > 0.45
-		and color.G > color.R * 1.2
-		and color.G > color.B * 1.2
-
-	local shapeMatch = size.X > size.Y * 1.6 and size.X >= 25 and size.Y >= 8 and size.Y <= 80
-	return shapeMatch and (colorMatch or nameMatch)
-end
-
-local function isWhiteGui(guiObject)
-	local color = getGuiColor(guiObject)
-	local size = guiObject.AbsoluteSize
-	local lowerName = string.lower(guiObject.Name)
-	local nameMatch = string.find(lowerName, "line")
-		or string.find(lowerName, "marker")
-		or string.find(lowerName, "cursor")
-		or string.find(lowerName, "needle")
-
-	local colorMatch = color and color.R > 0.8 and color.G > 0.8 and color.B > 0.8
-	local verticalShape = size.Y > size.X * 1.8 and size.X <= 30 and size.Y >= 12
-	return verticalShape and (colorMatch or nameMatch)
-end
-
-local function greenCandidateScore(guiObject)
-	local size = guiObject.AbsoluteSize
-	local lowerName = string.lower(guiObject.Name)
-	local score = size.X * size.Y
-
-	if string.find(lowerName, "green") then
-		score += 100000
-	end
-
-	if string.find(lowerName, "target") or string.find(lowerName, "zone") or string.find(lowerName, "safe") then
-		score += 50000
-	end
-
-	return score
-end
-
-local function whiteCandidateScore(guiObject)
-	local size = guiObject.AbsoluteSize
-	local lowerName = string.lower(guiObject.Name)
-	local score = math.min(size.X, size.Y)
-
-	if string.find(lowerName, "line") then
-		score -= 20
-	end
-
-	if string.find(lowerName, "marker") or string.find(lowerName, "cursor") or string.find(lowerName, "needle") then
-		score -= 10
-	end
-
-	return score
-end
-
-local function findTreasurePieces()
-	local digEvent = getDigEventGui()
-	if not digEvent or not digEvent:IsA("GuiObject") or not isGuiVisible(digEvent) then
-		return nil, nil, nil
-	end
-
-	local greenBar
-	local greenScore = -math.huge
-	local whiteLine
-	local whiteScore = math.huge
-
-	for _, guiObject in ipairs(digEvent:GetDescendants()) do
-		if guiObject:IsA("GuiObject") and isGuiVisible(guiObject) then
-			if isGreenGui(guiObject) then
-				local score = greenCandidateScore(guiObject)
-
-				if score > greenScore then
-					greenScore = score
-					greenBar = guiObject
-				end
-			end
-
-			if isWhiteGui(guiObject) then
-				local score = whiteCandidateScore(guiObject)
-
-				if score < whiteScore then
-					whiteScore = score
-					whiteLine = guiObject
-				end
-			end
-		end
-	end
-
-	if not greenBar or not whiteLine then
-		for _, guiObject in ipairs(digEvent:GetDescendants()) do
-			if guiObject:IsA("GuiObject") and isGuiVisible(guiObject) then
-				local size = guiObject.AbsoluteSize
-				local lowerName = string.lower(guiObject.Name)
-
-				if not greenBar and size.X > size.Y * 1.6 and size.X >= 40 and size.Y >= 8 and size.Y <= 90 then
-					if string.find(lowerName, "bar") or string.find(lowerName, "target") or string.find(lowerName, "zone") or string.find(lowerName, "green") then
-						greenBar = guiObject
-					end
-				end
-
-				if not whiteLine and size.Y > size.X * 1.8 and size.X <= 30 and size.Y >= 12 then
-					whiteLine = guiObject
-				end
-			end
-		end
-	end
-
-	return digEvent, greenBar, whiteLine
-end
-
-local function lineInsideGreen(greenBar, whiteLine, extraPadding)
-	if not greenBar or not whiteLine then
-		return false
-	end
-
-	local greenPosition = greenBar.AbsolutePosition
-	local greenSize = greenBar.AbsoluteSize
-	local linePosition = whiteLine.AbsolutePosition
-	local lineSize = whiteLine.AbsoluteSize
-	local padding = extraPadding or 2
-
-	local lineCenterX = linePosition.X + lineSize.X / 2
-	local lineCenterY = linePosition.Y + lineSize.Y / 2
-	local insideX = lineCenterX >= greenPosition.X - padding and lineCenterX <= greenPosition.X + greenSize.X + padding
-	local insideY = lineCenterY >= greenPosition.Y - padding and lineCenterY <= greenPosition.Y + greenSize.Y + padding
-
-	if lineSize.Y > lineSize.X then
-		return insideX
-	end
-
-	return insideX and insideY
-end
-
-local function getTreasureLineState(greenBar, whiteLine)
-	if lineInsideGreen(greenBar, whiteLine, 2) then
-		return "inside"
-	end
-
-	if lineInsideGreen(greenBar, whiteLine, settings.TreasureNearPadding) then
-		return "near"
-	end
-
-	return "outside"
-end
-
-local function getTreasureClickAction(greenBar, whiteLine)
-	if not greenBar or not whiteLine then
-		return "wait", "missing"
-	end
-
-	local greenPosition = greenBar.AbsolutePosition
-	local greenSize = greenBar.AbsoluteSize
-	local linePosition = whiteLine.AbsolutePosition
-	local lineSize = whiteLine.AbsoluteSize
-
-	local lineCenterX = linePosition.X + lineSize.X / 2
-	local greenLeft = greenPosition.X
-	local greenRight = greenLeft + greenSize.X
-	local leftGuard = greenLeft + greenSize.X * settings.TreasureLeftGuard
-	local rightGuard = greenLeft + greenSize.X * settings.TreasureRightGuard
-
-	if lineCenterX < greenLeft then
-		return "click", "left of green"
-	end
-
-	if lineCenterX < leftGuard then
-		return "click", "low in green"
-	end
-
-	if lineCenterX <= rightGuard then
-		return "coast", "centered"
-	end
-
-	if lineCenterX <= greenRight + settings.TreasureNearPadding then
-		return "coast", "right edge"
-	end
-
-	return "wait", "outside right"
-end
-
 local function runTreasureMinigame()
 	local sawUi = false
 	local waitingStarted = os.clock()
-	local clicks = 0
 
 	while autoTreasure do
-		local digEvent, greenBar, whiteLine = findTreasurePieces()
+		local digEvent = getDigEventGui()
+		local digUiOpen = digEvent and digEvent:IsA("GuiObject") and isGuiVisible(digEvent)
 
-		if digEvent then
+		if digUiOpen then
 			sawUi = true
-
-			if greenBar and whiteLine then
-				local action, reason = getTreasureClickAction(greenBar, whiteLine)
-
-				if action == "click" then
-					clicks += 1
-					setStatus("Treasure: holding line in green (" .. reason .. "). Clicks: " .. clicks)
-					activateDigTool()
-					task.wait(settings.TreasureHitDelay)
-				else
-					if action == "coast" then
-						setStatus("Treasure: line is " .. reason .. ", letting it fall left.")
-					end
-
-					task.wait(settings.TreasureLineCheckDelay)
-				end
-			else
-				setStatus("Treasure: looking for green bar and white line.")
-				task.wait(0.2)
-			end
+			setStatus("Treasure: your turn to click. Waiting for this pile to finish.")
+			task.wait(0.25)
 		elseif sawUi then
 			setStatus("Treasure: pile finished.")
 			return true
 		elseif os.clock() - waitingStarted > settings.TreasureUiWaitTime then
-			setStatus("Treasure: UI did not open, moving on.")
+			setStatus("Treasure: UI did not open, trying the next pile.")
 			return false
 		else
 			task.wait(0.1)
@@ -939,7 +697,7 @@ local function doTreasure()
 		return false
 	end
 
-	setStatus("Treasure: moving to DigPile.")
+	setStatus("Treasure: moving to DigPile and starting it.")
 	teleportTo(digPile, 3)
 	task.wait(settings.ActionDelay)
 
