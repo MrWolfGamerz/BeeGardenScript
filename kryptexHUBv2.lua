@@ -11,26 +11,31 @@ local backpack = player:WaitForChild("Backpack")
 
 local settings = {
 	CowName = "Cow",
+	CowPrefix = "Cow_cow_",
 	UFOName = "UFO",
 	GhostNames = { "FastGhost", "NormalGhost", "SlowGhost" },
 	MaterialNames = { "Meteoron", "Snowflake", "Candy" },
 	DigPileName = "DigPile",
 
 	TeleportHeight = 4,
-	ActionDelay = 0.2,
+	ActionDelay = 0.08,
 
-	UFODelay = 0.5,
-	SpookyDelay = 0.2,
+	UFODelay = 0.08,
+	UFOTouchTurnInDelay = 0.2,
+	SpookyDelay = 0.08,
 	SpookySlapDistance = 4,
 
-	MaterialDelay = 0.6,
-	MaterialCollectDelay = 0.75,
+	MaterialDelay = 0.1,
+	MaterialCollectDelay = 0.25,
 
-	TreasureDelay = 0.35,
+	TreasureDelay = 0.08,
 	TreasureUiWaitTime = 8,
 	TreasureLineCheckDelay = 0.015,
-	TreasureHitDelay = 0.025,
-	TreasureNearPadding = 18,
+	TreasureHitDelay = 0.012,
+	TreasureNearPadding = 0,
+	TreasureCenterBias = 0.5,
+	TreasureLeftGuard = 0.42,
+	TreasureRightGuard = 0.58,
 	TreasurePileCooldown = 35,
 }
 
@@ -188,6 +193,38 @@ local function getNearestFromNames(names, rootObject)
 	return nearest
 end
 
+local function getNearestByNameMatch(nameMatches, rootObject)
+	local root = getRoot()
+	local searchRoot = rootObject or Workspace
+	local nearest
+	local nearestDistance = math.huge
+
+	for _, instance in ipairs(searchRoot:GetDescendants()) do
+		local targetType = instance:IsA("Model") or instance:IsA("BasePart")
+
+		if targetType and nameMatches(instance.Name) and isActiveWorldObject(instance) then
+			local pivot = getPivot(instance)
+
+			if pivot then
+				local distance = (root.Position - pivot.Position).Magnitude
+
+				if distance < nearestDistance then
+					nearestDistance = distance
+					nearest = instance
+				end
+			end
+		end
+	end
+
+	return nearest
+end
+
+local function getNearestCow()
+	return getNearestByNameMatch(function(name)
+		return name == settings.CowName or string.sub(name, 1, #settings.CowPrefix) == settings.CowPrefix
+	end)
+end
+
 local function getPromptPosition(prompt)
 	local pivot = prompt.Parent and getPivot(prompt.Parent)
 	return pivot and pivot.Position
@@ -337,13 +374,13 @@ local function updateButtons()
 end
 
 local function doUFO()
-	local cow = getNearestNamed(settings.CowName)
+	local cow = getNearestCow()
 	if not cow then
-		setStatus("UFO: waiting for Cow.")
+		setStatus("UFO: waiting for Cow_cow_.")
 		return false
 	end
 
-	setStatus("UFO: picking up Cow.")
+	setStatus("UFO: picking up " .. cow.Name .. ".")
 	teleportTo(cow, settings.TeleportHeight)
 	task.wait(settings.ActionDelay)
 
@@ -369,7 +406,7 @@ local function doUFO()
 	if ufoPrompt then
 		holdPrompt(ufoPrompt)
 	else
-		task.wait(0.75)
+		task.wait(settings.UFOTouchTurnInDelay)
 	end
 
 	return true
@@ -743,6 +780,46 @@ local function getTreasureLineState(greenBar, whiteLine)
 	return "outside"
 end
 
+local function getTreasureClickAction(greenBar, whiteLine)
+	if not greenBar or not whiteLine then
+		return "wait", "missing"
+	end
+
+	local greenPosition = greenBar.AbsolutePosition
+	local greenSize = greenBar.AbsoluteSize
+	local linePosition = whiteLine.AbsolutePosition
+	local lineSize = whiteLine.AbsoluteSize
+
+	local lineCenterX = linePosition.X + lineSize.X / 2
+	local greenLeft = greenPosition.X
+	local greenRight = greenLeft + greenSize.X
+	local targetX = greenLeft + greenSize.X * settings.TreasureCenterBias
+	local leftGuard = greenLeft + greenSize.X * settings.TreasureLeftGuard
+	local rightGuard = greenLeft + greenSize.X * settings.TreasureRightGuard
+
+	if lineCenterX < greenLeft then
+		return "click", "left of green"
+	end
+
+	if lineCenterX < leftGuard then
+		return "click", "push to safe zone"
+	end
+
+	if lineCenterX < targetX then
+		return "click", "track center"
+	end
+
+	if lineCenterX <= rightGuard then
+		return "coast", "centered"
+	end
+
+	if lineCenterX <= greenRight + settings.TreasureNearPadding then
+		return "coast", "right edge"
+	end
+
+	return "wait", "outside right"
+end
+
 local function runTreasureMinigame()
 	local sawUi = false
 	local waitingStarted = os.clock()
@@ -755,14 +832,18 @@ local function runTreasureMinigame()
 			sawUi = true
 
 			if greenBar and whiteLine then
-				local lineState = getTreasureLineState(greenBar, whiteLine)
+				local action, reason = getTreasureClickAction(greenBar, whiteLine)
 
-				if lineState == "inside" or lineState == "near" then
+				if action == "click" then
 					clicks += 1
-					setStatus("Treasure: " .. lineState .. " green. Clicks: " .. clicks)
+					setStatus("Treasure: holding line in green (" .. reason .. "). Clicks: " .. clicks)
 					activateDigTool()
 					task.wait(settings.TreasureHitDelay)
 				else
+					if action == "coast" then
+						setStatus("Treasure: line is " .. reason .. ", letting it fall left.")
+					end
+
 					task.wait(settings.TreasureLineCheckDelay)
 				end
 			else
