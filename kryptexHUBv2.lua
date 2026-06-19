@@ -20,7 +20,7 @@ local settings = {
 	UFOName = "UFO",
 	GhostNames = { "FastGhost", "NormalGhost", "SlowGhost" },
 	GhostPrefixes = { "FastGhost_", "NormalGhost_", "SlowGhost_" },
-	MaterialNames = { "Meteoron", "Snowflake", "Candy", "SnowflakePickup" },
+	MaterialNames = { "Meteoron", "Snowflake", "Candy", "SnowflakePickup", "MeteoronPickup" },
 	DigPileName = "DigPile",
 
 	TeleportHeight = 4,
@@ -42,6 +42,7 @@ local settings = {
 
 	MaterialDelay = 0.1,
 	MaterialCollectDelay = 0.25,
+	MaterialHoverHeight = 1.6,
 
 	CoinCollectorName = "CoinCollector",
 	CoinScanDelay = 1,
@@ -745,6 +746,15 @@ local function getNearestMaterial()
 	return material or getNearestFromNames(settings.MaterialNames)
 end
 
+local function getPromptHoverHeight(prompt)
+	if not prompt then
+		return settings.MaterialHoverHeight
+	end
+
+	local maxDistance = prompt.MaxActivationDistance or 10
+	return math.clamp(settings.MaterialHoverHeight, 0.5, math.max(maxDistance - 1, 0.5))
+end
+
 local function doMaterials()
 	local material = getNearestMaterial()
 	if not material then
@@ -753,12 +763,14 @@ local function doMaterials()
 	end
 
 	setStatus("Materials: collecting " .. material.Name .. ".")
-	teleportTo(material, 3)
+	teleportTo(material, settings.MaterialHoverHeight)
 	task.wait(settings.MaterialCollectDelay)
 
 	local prompt = getNearestPrompt(material)
 	if prompt then
-		holdPrompt(prompt)
+		teleportTo(prompt.Parent or material, getPromptHoverHeight(prompt))
+		task.wait(settings.ActionDelay)
+		triggerPrompt(prompt)
 	else
 		task.wait(settings.MaterialCollectDelay)
 	end
