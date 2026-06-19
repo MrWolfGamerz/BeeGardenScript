@@ -31,11 +31,10 @@ local settings = {
 	TreasureDelay = 0.08,
 	TreasureUiWaitTime = 8,
 	TreasureLineCheckDelay = 0.015,
-	TreasureHitDelay = 0.012,
+	TreasureHitDelay = 0.08,
 	TreasureNearPadding = 0,
-	TreasureCenterBias = 0.5,
-	TreasureLeftGuard = 0.42,
-	TreasureRightGuard = 0.58,
+	TreasureLeftGuard = 0.3,
+	TreasureRightGuard = 0.72,
 	TreasurePileCooldown = 35,
 }
 
@@ -793,7 +792,6 @@ local function getTreasureClickAction(greenBar, whiteLine)
 	local lineCenterX = linePosition.X + lineSize.X / 2
 	local greenLeft = greenPosition.X
 	local greenRight = greenLeft + greenSize.X
-	local targetX = greenLeft + greenSize.X * settings.TreasureCenterBias
 	local leftGuard = greenLeft + greenSize.X * settings.TreasureLeftGuard
 	local rightGuard = greenLeft + greenSize.X * settings.TreasureRightGuard
 
@@ -802,11 +800,7 @@ local function getTreasureClickAction(greenBar, whiteLine)
 	end
 
 	if lineCenterX < leftGuard then
-		return "click", "push to safe zone"
-	end
-
-	if lineCenterX < targetX then
-		return "click", "track center"
+		return "click", "low in green"
 	end
 
 	if lineCenterX <= rightGuard then
