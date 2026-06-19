@@ -4,6 +4,11 @@
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+local VirtualInputManager
+
+pcall(function()
+	VirtualInputManager = game:GetService("VirtualInputManager")
+end)
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -14,6 +19,7 @@ local settings = {
 	CowPrefix = "Cow_cow_",
 	UFOName = "UFO",
 	GhostNames = { "FastGhost", "NormalGhost", "SlowGhost" },
+	GhostPrefixes = { "FastGhost_", "NormalGhost_", "SlowGhost_" },
 	MaterialNames = { "Meteoron", "Snowflake", "Candy" },
 	DigPileName = "DigPile",
 
@@ -22,8 +28,12 @@ local settings = {
 
 	UFODelay = 0.08,
 	UFOTouchTurnInDelay = 0.2,
-	SpookyDelay = 0.08,
-	SpookySlapDistance = 4,
+	SpookyDelay = 0.04,
+	SpookyEquipWait = 0.05,
+	SpookySlapDistance = 3,
+	SpookySwingRepeats = 3,
+	SpookySwingDelay = 0.025,
+	SpookySwingHoldTime = 0.02,
 
 	MaterialDelay = 0.1,
 	MaterialCollectDelay = 0.25,
@@ -47,6 +57,7 @@ local ufoLoopRunning = false
 local spookyLoopRunning = false
 local materialsLoopRunning = false
 local treasureLoopRunning = false
+local spookySlotSelected = false
 local completedDigPiles = {}
 
 local statusLabel
@@ -224,6 +235,24 @@ local function getNearestCow()
 	end)
 end
 
+local function getNearestGhost()
+	return getNearestByNameMatch(function(name)
+		for _, ghostName in ipairs(settings.GhostNames) do
+			if name == ghostName then
+				return true
+			end
+		end
+
+		for _, ghostPrefix in ipairs(settings.GhostPrefixes) do
+			if string.sub(name, 1, #ghostPrefix) == ghostPrefix then
+				return true
+			end
+		end
+
+		return false
+	end)
+end
+
 local function getPromptPosition(prompt)
 	local pivot = prompt.Parent and getPivot(prompt.Parent)
 	return pivot and pivot.Position
@@ -314,6 +343,19 @@ local function findEquippedTool(fragments)
 	end
 end
 
+local function getAnyEquippedTool()
+	local character = player.Character
+	if not character then
+		return nil
+	end
+
+	for _, child in ipairs(character:GetChildren()) do
+		if child:IsA("Tool") then
+			return child
+		end
+	end
+end
+
 local function findBackpackTool(fragments)
 	for _, tool in ipairs(getBackpackTools()) do
 		if toolNameContains(tool, fragments) then
@@ -347,6 +389,35 @@ local function activateTool(tool)
 
 	return pcall(function()
 		tool:Activate()
+	end)
+end
+
+local function tapKey(keyCode)
+	if not VirtualInputManager then
+		return false
+	end
+
+	return pcall(function()
+		VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
+		task.wait(0.025)
+		VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
+	end)
+end
+
+local function tapPrimaryAction()
+	if not VirtualInputManager then
+		return false
+	end
+
+	local camera = Workspace.CurrentCamera
+	local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
+	local x = viewport.X / 2
+	local y = viewport.Y / 2
+
+	return pcall(function()
+		VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+		task.wait(settings.SpookySwingHoldTime)
+		VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
 	end)
 end
 
@@ -429,32 +500,28 @@ local function startUFO()
 	end)
 end
 
-local function equipSlapper()
-	local tool = findEquippedTool({ "slap" }) or getSlotTool(2) or findBackpackTool({ "slap" })
-	if not tool then
-		setStatus("Spooky: put the slapper in slot 2.")
-		return nil
-	end
-
-	return equipTool(tool)
+local function selectSlapperSlot()
+	tapKey(Enum.KeyCode.Two)
+	task.wait(settings.SpookyEquipWait)
 end
 
 local function doSpooky()
-	local ghost = getNearestFromNames(settings.GhostNames)
+	local ghost = getNearestGhost()
 	if not ghost then
-		setStatus("Spooky: waiting for ghosts.")
+		setStatus("Spooky: waiting for FastGhost_, NormalGhost_, or SlowGhost_.")
 		return false
 	end
 
-	local slapper = equipSlapper()
-	if not slapper then
-		return false
-	end
-
-	setStatus("Spooky: slapping " .. ghost.Name .. ".")
+	setStatus("Spooky: slot 2, rushing " .. ghost.Name .. ".")
 	teleportBeside(ghost, settings.SpookySlapDistance, 1)
 	task.wait(settings.ActionDelay)
-	activateTool(slapper)
+
+	for _ = 1, settings.SpookySwingRepeats do
+		activateTool(findEquippedTool({ "slap" }) or getAnyEquippedTool())
+		tapPrimaryAction()
+		task.wait(settings.SpookySwingDelay)
+	end
+
 	task.wait(settings.SpookyDelay)
 	return true
 end
@@ -465,8 +532,15 @@ local function startSpooky()
 	end
 
 	spookyLoopRunning = true
+	spookySlotSelected = false
 
 	task.spawn(function()
+		if not spookySlotSelected then
+			setStatus("Spooky: pressing 2 once.")
+			selectSlapperSlot()
+			spookySlotSelected = true
+		end
+
 		while autoSpooky do
 			doSpooky()
 			task.wait(settings.SpookyDelay)
