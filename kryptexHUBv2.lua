@@ -20,7 +20,7 @@ local settings = {
 	UFOName = "UFO",
 	GhostNames = { "FastGhost", "NormalGhost", "SlowGhost" },
 	GhostPrefixes = { "FastGhost_", "NormalGhost_", "SlowGhost_" },
-	MaterialNames = { "Meteoron", "Snowflake", "Candy" },
+	MaterialNames = { "Meteoron", "Snowflake", "Candy", "SnowflakePickup" },
 	DigPileName = "DigPile",
 
 	TeleportHeight = 4,
