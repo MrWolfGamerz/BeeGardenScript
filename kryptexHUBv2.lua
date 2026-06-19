@@ -23,7 +23,7 @@ local settings = {
 	MaterialNames = { "MeteoronPickup", "Snowflake", "Candy" },
 	DigPileName = "DigPile",
 
-	TeleportHeight = 4,
+	TeleportHeight = 2,
 	ActionDelay = 0.08,
 
 	UFODelay = 0.08,
