@@ -20,13 +20,18 @@ local settings = {
 	UFOName = "UFO",
 	GhostNames = { "FastGhost", "NormalGhost", "SlowGhost" },
 	GhostPrefixes = { "FastGhost_", "NormalGhost_", "SlowGhost_" },
-	MaterialNames = { "MeteoronPickup", "Snowflake", "Candy" },
+	MaterialNames = { "Meteoron", "Snowflake", "Candy" },
 	DigPileName = "DigPile",
 
-	TeleportHeight = 2,
+	TeleportHeight = 4,
 	ActionDelay = 0.08,
 
 	UFODelay = 0.08,
+	UFOPickupConfirmTime = 1.25,
+	UFOFailedCowCooldown = 8,
+	UFODeliverTimeout = 12,
+	UFOStayUnderDelay = 0.08,
+	UFOUnderOffset = 2,
 	UFOTouchTurnInDelay = 0.2,
 	SpookyDelay = 0.04,
 	SpookyEquipWait = 0.05,
@@ -38,6 +43,11 @@ local settings = {
 	MaterialDelay = 0.1,
 	MaterialCollectDelay = 0.25,
 
+	CoinCollectorName = "CoinCollector",
+	CoinScanDelay = 1,
+	CoinCollectDelay = 0.35,
+	CoinReturnDelay = 0.2,
+
 	TreasureDelay = 0.08,
 	TreasureUiWaitTime = 8,
 	TreasurePileCooldown = 35,
@@ -46,19 +56,25 @@ local settings = {
 local autoUFO = false
 local autoSpooky = false
 local autoMaterials = false
+local autoCoins = false
 local autoTreasure = false
 
 local ufoLoopRunning = false
 local spookyLoopRunning = false
 local materialsLoopRunning = false
+local coinsLoopRunning = false
 local treasureLoopRunning = false
 local spookySlotSelected = false
+local currentSpookyTarget
+local failedCows = {}
 local completedDigPiles = {}
+local cachedPlayerPlot
 
 local statusLabel
 local ufoButton
 local spookyButton
 local materialsButton
+local coinsButton
 local treasureButton
 
 local function setStatus(message)
@@ -89,6 +105,20 @@ local function getPivot(instance)
 	end
 end
 
+local function getTeleportTarget(instance)
+	if getPivot(instance) then
+		return instance
+	end
+
+	for _, descendant in ipairs(instance:GetDescendants()) do
+		if descendant:IsA("Model") or descendant:IsA("BasePart") or descendant:IsA("Attachment") then
+			if getPivot(descendant) then
+				return descendant
+			end
+		end
+	end
+end
+
 local function isInsideCharacter(instance)
 	local character = player.Character
 	return character and instance:IsDescendantOf(character)
@@ -105,6 +135,15 @@ local function isActiveWorldObject(instance)
 	end
 
 	if instance:GetAttribute("Active") == false or instance:GetAttribute("Dead") == true then
+		return false
+	end
+
+	if instance:GetAttribute("Defeated") == true then
+		return false
+	end
+
+	local health = instance:GetAttribute("Health")
+	if typeof(health) == "number" and health <= 0 then
 		return false
 	end
 
@@ -198,7 +237,7 @@ local function getNearestFromNames(names, rootObject)
 	return nearest
 end
 
-local function getNearestByNameMatch(nameMatches, rootObject)
+local function getNearestByNameMatch(nameMatches, rootObject, instanceMatches)
 	local root = getRoot()
 	local searchRoot = rootObject or Workspace
 	local nearest
@@ -207,7 +246,7 @@ local function getNearestByNameMatch(nameMatches, rootObject)
 	for _, instance in ipairs(searchRoot:GetDescendants()) do
 		local targetType = instance:IsA("Model") or instance:IsA("BasePart")
 
-		if targetType and nameMatches(instance.Name) and isActiveWorldObject(instance) then
+		if targetType and nameMatches(instance.Name) and (not instanceMatches or instanceMatches(instance)) and isActiveWorldObject(instance) then
 			local pivot = getPivot(instance)
 
 			if pivot then
@@ -224,28 +263,59 @@ local function getNearestByNameMatch(nameMatches, rootObject)
 	return nearest
 end
 
+local function nameStartsWith(name, prefix)
+	return string.sub(name, 1, #prefix) == prefix
+end
+
+local function isCowName(name)
+	return name == settings.CowName or nameStartsWith(name, settings.CowPrefix)
+end
+
 local function getNearestCow()
 	return getNearestByNameMatch(function(name)
-		return name == settings.CowName or string.sub(name, 1, #settings.CowPrefix) == settings.CowPrefix
+		return isCowName(name)
+	end, nil, function(instance)
+		local failedAt = failedCows[instance]
+		return not failedAt or os.clock() - failedAt > settings.UFOFailedCowCooldown
 	end)
 end
 
+local function getHeldCow()
+	local character = player.Character
+	if not character then
+		return nil
+	end
+
+	for _, instance in ipairs(character:GetDescendants()) do
+		if isCowName(instance.Name) then
+			return instance
+		end
+	end
+end
+
+local function playerHasCow()
+	return getHeldCow() ~= nil
+end
+
 local function getNearestGhost()
-	return getNearestByNameMatch(function(name)
-		for _, ghostName in ipairs(settings.GhostNames) do
+	for index, ghostName in ipairs(settings.GhostNames) do
+		local ghostPrefix = settings.GhostPrefixes[index]
+		local ghost = getNearestByNameMatch(function(name)
 			if name == ghostName then
 				return true
 			end
-		end
 
-		for _, ghostPrefix in ipairs(settings.GhostPrefixes) do
-			if string.sub(name, 1, #ghostPrefix) == ghostPrefix then
+			if ghostPrefix and nameStartsWith(name, ghostPrefix) then
 				return true
 			end
-		end
 
-		return false
-	end)
+			return false
+		end)
+
+		if ghost then
+			return ghost
+		end
+	end
 end
 
 local function getPromptPosition(prompt)
@@ -276,6 +346,21 @@ local function getNearestPrompt(holder)
 	return nearest
 end
 
+local function triggerPrompt(prompt)
+	if not prompt or not prompt.Enabled then
+		return false
+	end
+
+	local success = pcall(function()
+		prompt:InputHoldBegin()
+		task.wait(math.max(prompt.HoldDuration, 0.05) + 0.15)
+		prompt:InputHoldEnd()
+	end)
+
+	task.wait(settings.ActionDelay)
+	return success
+end
+
 local function holdPrompt(prompt)
 	if not prompt or not prompt.Enabled then
 		return false
@@ -286,15 +371,7 @@ local function holdPrompt(prompt)
 	end
 
 	task.wait(settings.ActionDelay)
-
-	local success = pcall(function()
-		prompt:InputHoldBegin()
-		task.wait(math.max(prompt.HoldDuration, 0.05) + 0.15)
-		prompt:InputHoldEnd()
-	end)
-
-	task.wait(settings.ActionDelay)
-	return success
+	return triggerPrompt(prompt)
 end
 
 local function getBackpackTools()
@@ -432,13 +509,122 @@ local function updateButtons()
 		materialsButton.BackgroundColor3 = autoMaterials and Color3.fromRGB(34, 126, 76) or Color3.fromRGB(126, 47, 47)
 	end
 
+	if coinsButton then
+		coinsButton.Text = autoCoins and "Auto Coins: ON" or "Auto Coins: OFF"
+		coinsButton.BackgroundColor3 = autoCoins and Color3.fromRGB(34, 126, 76) or Color3.fromRGB(126, 47, 47)
+	end
+
 	if treasureButton then
 		treasureButton.Text = autoTreasure and "Treasure Hunt: ON" or "Treasure Hunt: OFF"
 		treasureButton.BackgroundColor3 = autoTreasure and Color3.fromRGB(34, 126, 76) or Color3.fromRGB(126, 47, 47)
 	end
 end
 
+local function getUFOUnderCFrame(ufo)
+	if not ufo then
+		return nil
+	end
+
+	if ufo:IsA("Model") then
+		local success, cframe, size = pcall(function()
+			return ufo:GetBoundingBox()
+		end)
+
+		if not success then
+			return getPivot(ufo)
+		end
+
+		local position = cframe.Position
+		return CFrame.new(position.X, position.Y - size.Y / 2 - settings.UFOUnderOffset, position.Z)
+	end
+
+	if ufo:IsA("BasePart") then
+		local position = ufo.Position
+		return CFrame.new(position.X, position.Y - ufo.Size.Y / 2 - settings.UFOUnderOffset, position.Z)
+	end
+
+	local pivot = getPivot(ufo)
+	if not pivot then
+		return nil
+	end
+
+	return pivot + Vector3.new(0, -settings.UFOUnderOffset, 0)
+end
+
+local function teleportUnderUFO(ufo)
+	local cframe = getUFOUnderCFrame(ufo)
+	if not cframe then
+		return false
+	end
+
+	getRoot().CFrame = cframe
+	return true
+end
+
+local function waitForCowPickup(cow)
+	local startedAt = os.clock()
+
+	while autoUFO and os.clock() - startedAt < settings.UFOPickupConfirmTime do
+		if playerHasCow() then
+			return true
+		end
+
+		if cow and isInsideCharacter(cow) then
+			return true
+		end
+
+		task.wait(0.05)
+	end
+
+	return playerHasCow()
+end
+
+local function markCowFailed(cow, reason)
+	if cow then
+		failedCows[cow] = os.clock()
+	end
+
+	setStatus("UFO: skipping cow, " .. reason)
+end
+
+local function deliverHeldCow()
+	local ufo = getNearestNamed(settings.UFOName)
+	if not ufo then
+		setStatus("UFO: holding Cow, waiting for UFO.")
+		return false
+	end
+
+	local startedAt = os.clock()
+
+	while autoUFO and playerHasCow() and os.clock() - startedAt < settings.UFODeliverTimeout do
+		setStatus("UFO: staying under UFO until Cow is gone.")
+		teleportUnderUFO(ufo)
+
+		local prompt = getNearestPrompt(ufo)
+		if prompt then
+			triggerPrompt(prompt)
+		else
+			task.wait(settings.UFOTouchTurnInDelay)
+		end
+
+		teleportUnderUFO(ufo)
+		task.wait(settings.UFOStayUnderDelay)
+	end
+
+	if playerHasCow() then
+		setStatus("UFO: Cow still held, retrying delivery.")
+		return false
+	end
+
+	setStatus("UFO: Cow delivered.")
+	return true
+end
+
 local function doUFO()
+	if playerHasCow() then
+		return deliverHeldCow()
+	end
+
 	local cow = getNearestCow()
 	if not cow then
 		setStatus("UFO: waiting for Cow_cow_.")
@@ -451,30 +637,21 @@ local function doUFO()
 
 	local cowPrompt = getNearestPrompt(cow)
 	if not cowPrompt then
-		setStatus("UFO: Cow has no prompt.")
+		markCowFailed(cow, "no prompt found.")
 		return false
 	end
 
-	holdPrompt(cowPrompt)
-
-	local ufo = getNearestNamed(settings.UFOName)
-	if not ufo then
-		setStatus("UFO: waiting for UFO.")
+	if not holdPrompt(cowPrompt) then
+		markCowFailed(cow, "prompt failed.")
 		return false
 	end
 
-	setStatus("UFO: turning in Cow.")
-	teleportTo(ufo, settings.TeleportHeight)
-	task.wait(settings.ActionDelay)
-
-	local ufoPrompt = getNearestPrompt(ufo)
-	if ufoPrompt then
-		holdPrompt(ufoPrompt)
-	else
-		task.wait(settings.UFOTouchTurnInDelay)
+	if not waitForCowPickup(cow) then
+		markCowFailed(cow, "pickup did not confirm.")
+		return false
 	end
 
-	return true
+	return deliverHeldCow()
 end
 
 local function startUFO()
@@ -501,13 +678,18 @@ local function selectSlapperSlot()
 end
 
 local function doSpooky()
-	local ghost = getNearestGhost()
+	if currentSpookyTarget and not isActiveWorldObject(currentSpookyTarget) then
+		currentSpookyTarget = nil
+	end
+
+	local ghost = currentSpookyTarget or getNearestGhost()
 	if not ghost then
 		setStatus("Spooky: waiting for FastGhost_, NormalGhost_, or SlowGhost_.")
 		return false
 	end
 
-	setStatus("Spooky: slot 2, rushing " .. ghost.Name .. ".")
+	currentSpookyTarget = ghost
+	setStatus("Spooky: locked on " .. ghost.Name .. ".")
 	teleportBeside(ghost, settings.SpookySlapDistance, 1)
 	task.wait(settings.ActionDelay)
 
@@ -515,6 +697,11 @@ local function doSpooky()
 		activateTool(findEquippedTool({ "slap" }) or getAnyEquippedTool())
 		tapPrimaryAction()
 		task.wait(settings.SpookySwingDelay)
+	end
+
+	if not isActiveWorldObject(ghost) then
+		currentSpookyTarget = nil
+		setStatus("Spooky: target down, finding next ghost.")
 	end
 
 	task.wait(settings.SpookyDelay)
@@ -528,6 +715,7 @@ local function startSpooky()
 
 	spookyLoopRunning = true
 	spookySlotSelected = false
+	currentSpookyTarget = nil
 
 	task.spawn(function()
 		if not spookySlotSelected then
@@ -542,6 +730,7 @@ local function startSpooky()
 		end
 
 		spookyLoopRunning = false
+		currentSpookyTarget = nil
 		setStatus("Spooky stopped.")
 	end)
 end
@@ -592,6 +781,313 @@ local function startMaterials()
 
 		materialsLoopRunning = false
 		setStatus("Materials stopped.")
+	end)
+end
+
+local function getPlotsFolder()
+	local scriptable = Workspace:FindFirstChild("Scriptable")
+	return scriptable and scriptable:FindFirstChild("Plots")
+end
+
+local function getPlotFromInstance(instance, plotsFolder)
+	local current = instance
+
+	while current and current.Parent do
+		if current.Parent == plotsFolder then
+			return current
+		end
+
+		current = current.Parent
+	end
+end
+
+local function getPlotFromReference(value, plotsFolder)
+	if not plotsFolder or value == nil then
+		return nil
+	end
+
+	if typeof(value) == "Instance" then
+		return getPlotFromInstance(value, plotsFolder)
+	end
+
+	local plot = plotsFolder:FindFirstChild(tostring(value))
+	if plot then
+		return plot
+	end
+end
+
+local function valueMatchesPlayer(value)
+	local valueType = typeof(value)
+
+	if valueType == "Instance" then
+		return value == player or value.Name == player.Name
+	end
+
+	if valueType == "number" then
+		return value == player.UserId
+	end
+
+	if valueType == "string" then
+		local lowerValue = string.lower(value)
+		local lowerName = string.lower(player.Name)
+		local lowerDisplay = string.lower(player.DisplayName)
+
+		return lowerValue == lowerName
+			or lowerValue == lowerDisplay
+			or string.find(lowerValue, lowerName, 1, true) ~= nil
+			or (lowerDisplay ~= "" and string.find(lowerValue, lowerDisplay, 1, true) ~= nil)
+	end
+
+	return false
+end
+
+local function nameLooksLikeOwner(name)
+	local lowerName = string.lower(name)
+	return string.find(lowerName, "owner", 1, true)
+		or string.find(lowerName, "player", 1, true)
+		or string.find(lowerName, "user", 1, true)
+		or string.find(lowerName, "claim", 1, true)
+end
+
+local function getPlayerPlotFromPlayerData(plotsFolder)
+	local containers = { player, player.Character }
+
+	for _, container in ipairs(containers) do
+		if container then
+			for key, value in pairs(container:GetAttributes()) do
+				if string.find(string.lower(key), "plot", 1, true) then
+					local plot = getPlotFromReference(value, plotsFolder)
+					if plot then
+						return plot
+					end
+				end
+			end
+
+			for _, child in ipairs(container:GetChildren()) do
+				if string.find(string.lower(child.Name), "plot", 1, true) then
+					local ok, value = pcall(function()
+						return child.Value
+					end)
+
+					local plot = ok and getPlotFromReference(value, plotsFolder)
+					if plot then
+						return plot
+					end
+
+					plot = getPlotFromReference(child, plotsFolder)
+					if plot then
+						return plot
+					end
+				end
+			end
+		end
+	end
+end
+
+local function plotBelongsToPlayer(plot)
+	for key, value in pairs(plot:GetAttributes()) do
+		if nameLooksLikeOwner(key) and valueMatchesPlayer(value) then
+			return true
+		end
+	end
+
+	for _, descendant in ipairs(plot:GetDescendants()) do
+		if nameLooksLikeOwner(descendant.Name) then
+			local ok, value = pcall(function()
+				return descendant.Value
+			end)
+
+			if ok and valueMatchesPlayer(value) then
+				return true
+			end
+		end
+
+		local ok, text = pcall(function()
+			return descendant.Text
+		end)
+
+		if ok and type(text) == "string" and valueMatchesPlayer(text) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function getPlayerPlot()
+	local plotsFolder = getPlotsFolder()
+	if not plotsFolder then
+		return nil
+	end
+
+	if cachedPlayerPlot and cachedPlayerPlot.Parent and cachedPlayerPlot:IsDescendantOf(plotsFolder) then
+		return cachedPlayerPlot
+	end
+
+	local referencedPlot = getPlayerPlotFromPlayerData(plotsFolder)
+	if referencedPlot then
+		cachedPlayerPlot = referencedPlot
+		return referencedPlot
+	end
+
+	for _, plot in ipairs(plotsFolder:GetChildren()) do
+		if plotBelongsToPlayer(plot) then
+			cachedPlayerPlot = plot
+			return plot
+		end
+	end
+end
+
+local function textSaysCollectReady(text)
+	local lowerText = string.lower(tostring(text or ""))
+
+	if string.find(lowerText, "not full", 1, true) or string.find(lowerText, "empty", 1, true) then
+		return false
+	end
+
+	local firstNumber, secondNumber = string.match(lowerText, "([%d%.]+)%D*/%D*([%d%.]+)")
+	local amount = firstNumber and tonumber(firstNumber)
+	local capacity = secondNumber and tonumber(secondNumber)
+
+	if amount and capacity and capacity > 0 then
+		return amount >= capacity
+	end
+
+	return string.find(lowerText, "full", 1, true)
+		or string.find(lowerText, "ready", 1, true)
+		or string.find(lowerText, "collect", 1, true)
+end
+
+local function readNumber(value)
+	local valueType = typeof(value)
+
+	if valueType == "number" then
+		return value
+	end
+
+	if valueType == "string" then
+		return tonumber(value)
+	end
+end
+
+local function coinCollectorIsFull(collector)
+	local amount
+	local capacity
+
+	local function checkNamedValue(name, value)
+		local lowerName = string.lower(name)
+		local numberValue = readNumber(value)
+
+		if nameLooksLikeOwner(name) then
+			return
+		end
+
+		if textSaysCollectReady(tostring(value)) then
+			return true
+		end
+
+		if numberValue then
+			if string.find(lowerName, "max", 1, true) or string.find(lowerName, "capacity", 1, true) or string.find(lowerName, "limit", 1, true) then
+				capacity = math.max(capacity or 0, numberValue)
+			elseif string.find(lowerName, "coin", 1, true) or string.find(lowerName, "amount", 1, true) or string.find(lowerName, "stored", 1, true) or string.find(lowerName, "cash", 1, true) or lowerName == "value" then
+				amount = math.max(amount or 0, numberValue)
+			end
+		end
+	end
+
+	for key, value in pairs(collector:GetAttributes()) do
+		local lowerKey = string.lower(key)
+
+		if (string.find(lowerKey, "full", 1, true) or string.find(lowerKey, "ready", 1, true) or string.find(lowerKey, "collect", 1, true)) and value == true then
+			return true
+		end
+
+		if checkNamedValue(key, value) then
+			return true
+		end
+	end
+
+	for _, descendant in ipairs(collector:GetDescendants()) do
+		local ok, value = pcall(function()
+			return descendant.Value
+		end)
+
+		if ok and checkNamedValue(descendant.Name, value) then
+			return true
+		end
+
+		local textOk, text = pcall(function()
+			return descendant.Text
+		end)
+
+		if textOk and type(text) == "string" and textSaysCollectReady(text) then
+			return true
+		end
+
+		if descendant:IsA("ProximityPrompt") and descendant.Enabled then
+			if textSaysCollectReady(descendant.ActionText) or textSaysCollectReady(descendant.ObjectText) then
+				return true
+			end
+		end
+	end
+
+	return amount ~= nil and capacity ~= nil and capacity > 0 and amount >= capacity
+end
+
+local function doCoins()
+	local plot = getPlayerPlot()
+	if not plot then
+		setStatus("Coins: could not find your plot yet.")
+		return false
+	end
+
+	local collector = plot:FindFirstChild(settings.CoinCollectorName, true)
+	if not collector then
+		setStatus("Coins: no CoinCollector found in your plot.")
+		return false
+	end
+
+	if not coinCollectorIsFull(collector) then
+		setStatus("Coins: collector is not full yet.")
+		return false
+	end
+
+	local returnCFrame = getRoot().CFrame
+	setStatus("Coins: collector full, collecting.")
+	teleportTo(getTeleportTarget(collector) or collector, 3)
+	task.wait(settings.ActionDelay)
+
+	local prompt = getNearestPrompt(collector)
+	if prompt then
+		holdPrompt(prompt)
+	else
+		task.wait(settings.CoinCollectDelay)
+	end
+
+	task.wait(settings.CoinReturnDelay)
+
+	if autoCoins and returnCFrame then
+		getRoot().CFrame = returnCFrame
+	end
+
+	return true
+end
+
+local function startCoins()
+	if coinsLoopRunning then
+		return
+	end
+
+	coinsLoopRunning = true
+
+	task.spawn(function()
+		while autoCoins do
+			doCoins()
+			task.wait(settings.CoinScanDelay)
+		end
+
+		coinsLoopRunning = false
+		setStatus("Auto Coins stopped.")
 	end)
 end
 
@@ -896,7 +1392,7 @@ end)
 
 local isTouch = UserInputService.TouchEnabled
 local hubWidth = isTouch and 280 or 310
-local hubHeight = 315
+local hubHeight = 365
 
 local main = Instance.new("Frame")
 main.Size = UDim2.fromOffset(hubWidth, hubHeight)
@@ -1018,6 +1514,18 @@ materialsButton = createButton(body, "Materials: OFF", function()
 	end
 end)
 
+coinsButton = createButton(body, "Auto Coins: OFF", function()
+	autoCoins = not autoCoins
+	updateButtons()
+
+	if autoCoins then
+		setStatus("Auto Coins started.")
+		startCoins()
+	else
+		setStatus("Stopping Auto Coins.")
+	end
+end)
+
 treasureButton = createButton(body, "Treasure Hunt: OFF", function()
 	autoTreasure = not autoTreasure
 	updateButtons()
@@ -1036,6 +1544,7 @@ connectTap(closeButton, function()
 	autoUFO = false
 	autoSpooky = false
 	autoMaterials = false
+	autoCoins = false
 	autoTreasure = false
 	screenGui:Destroy()
 end)
