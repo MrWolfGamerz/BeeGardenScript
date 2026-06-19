@@ -30,6 +30,7 @@ local settings = {
 	UFOPickupConfirmTime = 1.25,
 	UFOFailedCowCooldown = 8,
 	UFODeliverTimeout = 12,
+	UFOAssumedDeliverTime = 0.75,
 	UFOStayUnderDelay = 0.08,
 	UFOUnderOffset = 2,
 	UFOTouchTurnInDelay = 0.2,
@@ -62,6 +63,7 @@ local materialsLoopRunning = false
 local treasureLoopRunning = false
 local spookySlotSelected = false
 local currentSpookyTarget
+local ufoAssumeCarryingCow = false
 local failedCows = {}
 local completedDigPiles = {}
 
@@ -248,7 +250,8 @@ local function nameStartsWith(name, prefix)
 end
 
 local function isCowName(name)
-	return name == settings.CowName or nameStartsWith(name, settings.CowPrefix)
+	local lowerName = string.lower(name)
+	return name == settings.CowName or nameStartsWith(name, settings.CowPrefix) or string.find(lowerName, "cow", 1, true) ~= nil
 end
 
 local function getNearestCow()
@@ -274,7 +277,25 @@ local function getHeldCow()
 end
 
 local function playerHasCow()
-	return getHeldCow() ~= nil
+	if ufoAssumeCarryingCow or getHeldCow() ~= nil then
+		return true
+	end
+
+	local character = player.Character
+	local containers = { player, character }
+
+	for _, container in ipairs(containers) do
+		if container then
+			for key, value in pairs(container:GetAttributes()) do
+				local lowerKey = string.lower(key)
+				if (string.find(lowerKey, "cow", 1, true) or string.find(lowerKey, "carry", 1, true) or string.find(lowerKey, "hold", 1, true)) and value == true then
+					return true
+				end
+			end
+		end
+	end
+
+	return false
 end
 
 local function getNearestGhost()
@@ -582,15 +603,22 @@ local function deliverHeldCow()
 			task.wait(settings.UFOTouchTurnInDelay)
 		end
 
+		if ufoAssumeCarryingCow and not getHeldCow() and os.clock() - startedAt >= settings.UFOAssumedDeliverTime then
+			ufoAssumeCarryingCow = false
+			break
+		end
+
 		teleportUnderUFO(ufo)
 		task.wait(settings.UFOStayUnderDelay)
 	end
 
-	if playerHasCow() then
+	if playerHasCow() and os.clock() - startedAt >= settings.UFODeliverTimeout then
 		setStatus("UFO: Cow still held, retrying delivery.")
+		ufoAssumeCarryingCow = false
 		return false
 	end
 
+	ufoAssumeCarryingCow = false
 	setStatus("UFO: Cow delivered.")
 	return true
 end
@@ -621,11 +649,7 @@ local function doUFO()
 		return false
 	end
 
-	if not waitForCowPickup(cow) then
-		markCowFailed(cow, "pickup did not confirm.")
-		return false
-	end
-
+	ufoAssumeCarryingCow = true
 	return deliverHeldCow()
 end
 
