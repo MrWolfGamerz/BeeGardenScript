@@ -1,1252 +1,851 @@
--- kryptexHUBv2
--- Simple one-page mobile-friendly hub. No place ID check.
-
-local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
-local VirtualInputManager
-
-pcall(function()
-	VirtualInputManager = game:GetService("VirtualInputManager")
-end)
-
-local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
-local backpack = player:WaitForChild("Backpack")
-
-local settings = {
-	CowName = "Cow",
-	CowPrefix = "Cow_cow_",
-	UFOName = "UFO",
-	GhostNames = { "FastGhost", "NormalGhost", "SlowGhost" },
-	GhostPrefixes = { "FastGhost_", "NormalGhost_", "SlowGhost_" },
-	MaterialNames = { "Meteoron", "Snowflake","CandyPickup", "PumpkinPickup", "Candy", "SnowflakePickup", "MeteoronPickup", "AlienPickup", "AlienCharm" },
-	DigPileName = "DigPile",
-
-	TeleportHeight = 4,
-	ActionDelay = 0.08,
-
-	UFODelay = 0.08,
-	UFOPickupConfirmTime = 1.25,
-	UFOFailedCowCooldown = 8,
-	UFODeliverTimeout = 12,
-	UFOAssumedDeliverTime = 0.75,
-	UFOStayUnderDelay = 0.08,
-	UFOUnderOffset = 2,
-	UFOTouchTurnInDelay = 0.2,
-	SpookyDelay = 0.04,
-	SpookyEquipWait = 0.05,
-	SpookySlapDistance = 3,
-	SpookySwingRepeats = 3,
-	SpookySwingDelay = 0.025,
-	SpookySwingHoldTime = 0.02,
-
-	MaterialDelay = 0.1,
-	MaterialCollectDelay = 0.25,
-	MaterialHoverHeight = 1.6,
-
-	TreasureDelay = 0.01,
-	TreasureUiWaitTime = 8,
-	TreasureUiPollDelay = 0.03,
-	TreasureHoverHeight = 0.5,
-	TreasurePileCooldown = 35,
-}
-
-local autoUFO = false
-local autoSpooky = false
-local autoMaterials = false
-local autoTreasure = false
-
-local ufoLoopRunning = false
-local spookyLoopRunning = false
-local materialsLoopRunning = false
-local treasureLoopRunning = false
-local spookySlotSelected = false
-local currentSpookyTarget
-local ufoAssumeCarryingCow = false
-local failedCows = {}
-local completedDigPiles = {}
-
-local statusLabel
-local ufoButton
-local spookyButton
-local materialsButton
-local treasureButton
-
-local function setStatus(message)
-	if statusLabel then
-		statusLabel.Text = message
-	end
-end
-
-local function getCharacter()
-	return player.Character or player.CharacterAdded:Wait()
-end
-
-local function getRoot()
-	return getCharacter():WaitForChild("HumanoidRootPart")
-end
-
-local function getPivot(instance)
-	if instance:IsA("Model") then
-		return instance:GetPivot()
-	end
-
-	if instance:IsA("BasePart") then
-		return instance.CFrame
-	end
-
-	if instance:IsA("Attachment") then
-		return instance.WorldCFrame
-	end
-end
-
-local function isInsideCharacter(instance)
-	local character = player.Character
-	return character and instance:IsDescendantOf(character)
-end
-
-local function isActiveWorldObject(instance)
-	if not instance or not instance.Parent or isInsideCharacter(instance) then
-		return false
-	end
-
-	local humanoid = instance:IsA("Model") and instance:FindFirstChildOfClass("Humanoid")
-	if humanoid and humanoid.Health <= 0 then
-		return false
-	end
-
-	if instance:GetAttribute("Active") == false or instance:GetAttribute("Dead") == true then
-		return false
-	end
-
-	if instance:GetAttribute("Defeated") == true then
-		return false
-	end
-
-	local health = instance:GetAttribute("Health")
-	if typeof(health) == "number" and health <= 0 then
-		return false
-	end
-
-	return getPivot(instance) ~= nil
-end
-
-local function teleportTo(instance, height)
-	local pivot = getPivot(instance)
-	if not pivot then
-		return false
-	end
-
-	getRoot().CFrame = pivot + Vector3.new(0, height or settings.TeleportHeight, 0)
-	return true
-end
-
-local function teleportBeside(instance, distance, height)
-	local pivot = getPivot(instance)
-	if not pivot then
-		return false
-	end
-
-	local root = getRoot()
-	local direction = root.Position - pivot.Position
-	direction = Vector3.new(direction.X, 0, direction.Z)
-
-	if direction.Magnitude < 1 then
-		direction = Vector3.new(0, 0, 1)
-	end
-
-	local target = pivot.Position + direction.Unit * distance + Vector3.new(0, height or 1, 0)
-	root.CFrame = CFrame.lookAt(target, pivot.Position)
-	return true
-end
-
-local function getNearestNamed(name, rootObject)
-	local root = getRoot()
-	local searchRoot = rootObject or Workspace
-	local nearest
-	local nearestDistance = math.huge
-
-	for _, instance in ipairs(searchRoot:GetDescendants()) do
-		local targetType = instance:IsA("Model") or instance:IsA("BasePart")
-
-		if targetType and instance.Name == name and isActiveWorldObject(instance) then
-			local pivot = getPivot(instance)
-
-			if pivot then
-				local distance = (root.Position - pivot.Position).Magnitude
-
-				if distance < nearestDistance then
-					nearestDistance = distance
-					nearest = instance
-				end
-			end
-		end
-	end
-
-	return nearest
-end
-
-local function getNearestFromNames(names, rootObject)
-	local root = getRoot()
-	local searchRoot = rootObject or Workspace
-	local nearest
-	local nearestDistance = math.huge
-
-	for _, instance in ipairs(searchRoot:GetDescendants()) do
-		local targetType = instance:IsA("Model") or instance:IsA("BasePart")
-
-		if targetType and isActiveWorldObject(instance) then
-			for _, name in ipairs(names) do
-				if instance.Name == name then
-					local pivot = getPivot(instance)
-
-					if pivot then
-						local distance = (root.Position - pivot.Position).Magnitude
-
-						if distance < nearestDistance then
-							nearestDistance = distance
-							nearest = instance
-						end
-					end
-
-					break
-				end
-			end
-		end
-	end
-
-	return nearest
-end
-
-local function getNearestByNameMatch(nameMatches, rootObject, instanceMatches)
-	local root = getRoot()
-	local searchRoot = rootObject or Workspace
-	local nearest
-	local nearestDistance = math.huge
-
-	for _, instance in ipairs(searchRoot:GetDescendants()) do
-		local targetType = instance:IsA("Model") or instance:IsA("BasePart")
-
-		if targetType and nameMatches(instance.Name) and (not instanceMatches or instanceMatches(instance)) and isActiveWorldObject(instance) then
-			local pivot = getPivot(instance)
-
-			if pivot then
-				local distance = (root.Position - pivot.Position).Magnitude
-
-				if distance < nearestDistance then
-					nearestDistance = distance
-					nearest = instance
-				end
-			end
-		end
-	end
-
-	return nearest
-end
-
-local function nameStartsWith(name, prefix)
-	return string.sub(name, 1, #prefix) == prefix
-end
-
-local function isCowName(name)
-	local lowerName = string.lower(name)
-	return name == settings.CowName or nameStartsWith(name, settings.CowPrefix) or string.find(lowerName, "cow", 1, true) ~= nil
-end
-
-local function getNearestCow()
-	return getNearestByNameMatch(function(name)
-		return isCowName(name)
-	end, nil, function(instance)
-		local failedAt = failedCows[instance]
-		return not failedAt or os.clock() - failedAt > settings.UFOFailedCowCooldown
-	end)
-end
-
-local function getHeldCow()
-	local character = player.Character
-	if not character then
-		return nil
-	end
-
-	for _, instance in ipairs(character:GetDescendants()) do
-		if isCowName(instance.Name) then
-			return instance
-		end
-	end
-end
-
-local function playerHasCow()
-	if ufoAssumeCarryingCow or getHeldCow() ~= nil then
-		return true
-	end
-
-	local character = player.Character
-	local containers = { player, character }
-
-	for _, container in ipairs(containers) do
-		if container then
-			for key, value in pairs(container:GetAttributes()) do
-				local lowerKey = string.lower(key)
-				if (string.find(lowerKey, "cow", 1, true) or string.find(lowerKey, "carry", 1, true) or string.find(lowerKey, "hold", 1, true)) and value == true then
-					return true
-				end
-			end
-		end
-	end
-
-	return false
-end
-
-local function getNearestGhost()
-	for index, ghostName in ipairs(settings.GhostNames) do
-		local ghostPrefix = settings.GhostPrefixes[index]
-		local ghost = getNearestByNameMatch(function(name)
-			if name == ghostName then
-				return true
-			end
-
-			if ghostPrefix and nameStartsWith(name, ghostPrefix) then
-				return true
-			end
-
-			return false
-		end)
-
-		if ghost then
-			return ghost
-		end
-	end
-end
-
-local function getPromptPosition(prompt)
-	local pivot = prompt.Parent and getPivot(prompt.Parent)
-	return pivot and pivot.Position
-end
-
-local function getNearestPrompt(holder)
-	local root = getRoot()
-	local nearest
-	local nearestDistance = math.huge
-
-	for _, descendant in ipairs(holder:GetDescendants()) do
-		if descendant:IsA("ProximityPrompt") and descendant.Enabled then
-			local position = getPromptPosition(descendant)
-
-			if position then
-				local distance = (root.Position - position).Magnitude
-
-				if distance < nearestDistance then
-					nearestDistance = distance
-					nearest = descendant
-				end
-			end
-		end
-	end
-
-	return nearest
-end
-
-local function triggerPrompt(prompt)
-	if not prompt or not prompt.Enabled then
-		return false
-	end
-
-	local success = pcall(function()
-		prompt:InputHoldBegin()
-		task.wait(math.max(prompt.HoldDuration, 0.05) + 0.15)
-		prompt:InputHoldEnd()
-	end)
-
-	task.wait(settings.ActionDelay)
-	return success
-end
-
-local function holdPrompt(prompt)
-	if not prompt or not prompt.Enabled then
-		return false
-	end
-
-	if prompt.Parent then
-		teleportTo(prompt.Parent, 3)
-	end
-
-	task.wait(settings.ActionDelay)
-	return triggerPrompt(prompt)
-end
-
-local function getBackpackTools()
-	local tools = {}
-
-	for _, child in ipairs(backpack:GetChildren()) do
-		if child:IsA("Tool") then
-			table.insert(tools, child)
-		end
-	end
-
-	return tools
-end
-
-local function getSlotTool(slotNumber)
-	return getBackpackTools()[slotNumber]
-end
-
-local function toolNameContains(tool, fragments)
-	local lowerName = string.lower(tool.Name)
-
-	for _, fragment in ipairs(fragments) do
-		if string.find(lowerName, fragment) then
-			return true
-		end
-	end
-
-	return false
-end
-
-local function findEquippedTool(fragments)
-	local character = player.Character
-	if not character then
-		return nil
-	end
-
-	for _, child in ipairs(character:GetChildren()) do
-		if child:IsA("Tool") and toolNameContains(child, fragments) then
-			return child
-		end
-	end
-end
-
-local function getAnyEquippedTool()
-	local character = player.Character
-	if not character then
-		return nil
-	end
-
-	for _, child in ipairs(character:GetChildren()) do
-		if child:IsA("Tool") then
-			return child
-		end
-	end
-end
-
-local function findBackpackTool(fragments)
-	for _, tool in ipairs(getBackpackTools()) do
-		if toolNameContains(tool, fragments) then
-			return tool
-		end
-	end
-end
-
-local function equipTool(tool)
-	if not tool then
-		return nil
-	end
-
-	local humanoid = getCharacter():FindFirstChildOfClass("Humanoid")
-	if not humanoid then
-		return nil
-	end
-
-	if tool.Parent ~= player.Character then
-		humanoid:EquipTool(tool)
-		task.wait(0.1)
-	end
-
-	return tool
-end
-
-local function activateTool(tool)
-	if not tool then
-		return false
-	end
-
-	return pcall(function()
-		tool:Activate()
-	end)
-end
-
-local function tapKey(keyCode)
-	if not VirtualInputManager then
-		return false
-	end
-
-	return pcall(function()
-		VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
-		task.wait(0.025)
-		VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
-	end)
-end
-
-local function tapPrimaryAction()
-	if not VirtualInputManager then
-		return false
-	end
-
-	local camera = Workspace.CurrentCamera
-	local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
-	local x = viewport.X / 2
-	local y = viewport.Y / 2
-
-	return pcall(function()
-		VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
-		task.wait(settings.SpookySwingHoldTime)
-		VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
-	end)
-end
-
-local function updateButtons()
-	if ufoButton then
-		ufoButton.Text = autoUFO and "UFO: ON" or "UFO: OFF"
-		ufoButton.BackgroundColor3 = autoUFO and Color3.fromRGB(34, 126, 76) or Color3.fromRGB(126, 47, 47)
-	end
-
-	if spookyButton then
-		spookyButton.Text = autoSpooky and "Spooky: ON" or "Spooky: OFF"
-		spookyButton.BackgroundColor3 = autoSpooky and Color3.fromRGB(34, 126, 76) or Color3.fromRGB(126, 47, 47)
-	end
-
-	if materialsButton then
-		materialsButton.Text = autoMaterials and "Materials: ON" or "Materials: OFF"
-		materialsButton.BackgroundColor3 = autoMaterials and Color3.fromRGB(34, 126, 76) or Color3.fromRGB(126, 47, 47)
-	end
-
-	if treasureButton then
-		treasureButton.Text = autoTreasure and "Treasure Hunt: ON" or "Treasure Hunt: OFF"
-		treasureButton.BackgroundColor3 = autoTreasure and Color3.fromRGB(34, 126, 76) or Color3.fromRGB(126, 47, 47)
-	end
-end
-
-local function getUFOUnderCFrame(ufo)
-	if not ufo then
-		return nil
-	end
-
-	if ufo:IsA("Model") then
-		local success, cframe, size = pcall(function()
-			return ufo:GetBoundingBox()
-		end)
-
-		if not success then
-			return getPivot(ufo)
-		end
-
-		local position = cframe.Position
-		return CFrame.new(position.X, position.Y - size.Y / 2 - settings.UFOUnderOffset, position.Z)
-	end
-
-	if ufo:IsA("BasePart") then
-		local position = ufo.Position
-		return CFrame.new(position.X, position.Y - ufo.Size.Y / 2 - settings.UFOUnderOffset, position.Z)
-	end
-
-	local pivot = getPivot(ufo)
-	if not pivot then
-		return nil
-	end
-
-	return pivot + Vector3.new(0, -settings.UFOUnderOffset, 0)
-end
-
-local function teleportUnderUFO(ufo)
-	local cframe = getUFOUnderCFrame(ufo)
-	if not cframe then
-		return false
-	end
-
-	getRoot().CFrame = cframe
-	return true
-end
-
-local function waitForCowPickup(cow)
-	local startedAt = os.clock()
-
-	while autoUFO and os.clock() - startedAt < settings.UFOPickupConfirmTime do
-		if playerHasCow() then
-			return true
-		end
-
-		if cow and isInsideCharacter(cow) then
-			return true
-		end
-
-		task.wait(0.05)
-	end
-
-	return playerHasCow()
-end
-
-local function markCowFailed(cow, reason)
-	if cow then
-		failedCows[cow] = os.clock()
-	end
-
-	setStatus("UFO: skipping cow, " .. reason)
-end
-
-local function deliverHeldCow()
-	local ufo = getNearestNamed(settings.UFOName)
-	if not ufo then
-		setStatus("UFO: holding Cow, waiting for UFO.")
-		return false
-	end
-
-	local startedAt = os.clock()
-
-	while autoUFO and playerHasCow() and os.clock() - startedAt < settings.UFODeliverTimeout do
-		setStatus("UFO: staying under UFO until Cow is gone.")
-		teleportUnderUFO(ufo)
-
-		local prompt = getNearestPrompt(ufo)
-		if prompt then
-			triggerPrompt(prompt)
-		else
-			task.wait(settings.UFOTouchTurnInDelay)
-		end
-
-		if ufoAssumeCarryingCow and not getHeldCow() and os.clock() - startedAt >= settings.UFOAssumedDeliverTime then
-			ufoAssumeCarryingCow = false
-			break
-		end
-
-		teleportUnderUFO(ufo)
-		task.wait(settings.UFOStayUnderDelay)
-	end
-
-	if playerHasCow() and os.clock() - startedAt >= settings.UFODeliverTimeout then
-		setStatus("UFO: Cow still held, retrying delivery.")
-		ufoAssumeCarryingCow = false
-		return false
-	end
-
-	ufoAssumeCarryingCow = false
-	setStatus("UFO: Cow delivered.")
-	return true
-end
-
-local function doUFO()
-	if playerHasCow() then
-		return deliverHeldCow()
-	end
-
-	local cow = getNearestCow()
-	if not cow then
-		setStatus("UFO: waiting for Cow_cow_.")
-		return false
-	end
-
-	setStatus("UFO: picking up " .. cow.Name .. ".")
-	teleportTo(cow, settings.TeleportHeight)
-	task.wait(settings.ActionDelay)
-
-	local cowPrompt = getNearestPrompt(cow)
-	if not cowPrompt then
-		markCowFailed(cow, "no prompt found.")
-		return false
-	end
-
-	if not holdPrompt(cowPrompt) then
-		markCowFailed(cow, "prompt failed.")
-		return false
-	end
-
-	ufoAssumeCarryingCow = true
-	return deliverHeldCow()
-end
-
-local function startUFO()
-	if ufoLoopRunning then
-		return
-	end
-
-	ufoLoopRunning = true
-
-	task.spawn(function()
-		while autoUFO do
-			doUFO()
-			task.wait(settings.UFODelay)
-		end
-
-		ufoLoopRunning = false
-		setStatus("UFO stopped.")
-	end)
-end
-
-local function selectSlapperSlot()
-	tapKey(Enum.KeyCode.Two)
-	task.wait(settings.SpookyEquipWait)
-end
-
-local function doSpooky()
-	if currentSpookyTarget and not isActiveWorldObject(currentSpookyTarget) then
-		currentSpookyTarget = nil
-	end
-
-	local ghost = currentSpookyTarget or getNearestGhost()
-	if not ghost then
-		setStatus("Spooky: waiting for FastGhost_, NormalGhost_, or SlowGhost_.")
-		return false
-	end
-
-	currentSpookyTarget = ghost
-	setStatus("Spooky: locked on " .. ghost.Name .. ".")
-	teleportBeside(ghost, settings.SpookySlapDistance, 1)
-	task.wait(settings.ActionDelay)
-
-	for _ = 1, settings.SpookySwingRepeats do
-		activateTool(findEquippedTool({ "slap" }) or getAnyEquippedTool())
-		tapPrimaryAction()
-		task.wait(settings.SpookySwingDelay)
-	end
-
-	if not isActiveWorldObject(ghost) then
-		currentSpookyTarget = nil
-		setStatus("Spooky: target down, finding next ghost.")
-	end
-
-	task.wait(settings.SpookyDelay)
-	return true
-end
-
-local function startSpooky()
-	if spookyLoopRunning then
-		return
-	end
-
-	spookyLoopRunning = true
-	spookySlotSelected = false
-	currentSpookyTarget = nil
-
-	task.spawn(function()
-		if not spookySlotSelected then
-			setStatus("Spooky: pressing 2 once.")
-			selectSlapperSlot()
-			spookySlotSelected = true
-		end
-
-		while autoSpooky do
-			doSpooky()
-			task.wait(settings.SpookyDelay)
-		end
-
-		spookyLoopRunning = false
-		currentSpookyTarget = nil
-		setStatus("Spooky stopped.")
-	end)
-end
-
-local function getWorkshop()
-	return Workspace:FindFirstChild("Workshop", true) or Workspace:FindFirstChild("WorkShop", true)
-end
-
-local function getNearestMaterial()
-	local workshop = getWorkshop()
-	local material = workshop and getNearestFromNames(settings.MaterialNames, workshop)
-	return material or getNearestFromNames(settings.MaterialNames)
-end
-
-local function getPromptHoverHeight(prompt)
-	if not prompt then
-		return settings.MaterialHoverHeight
-	end
-
-	local maxDistance = prompt.MaxActivationDistance or 10
-	return math.clamp(settings.MaterialHoverHeight, 0.5, math.max(maxDistance - 1, 0.5))
-end
-
-local function doMaterials()
-	local material = getNearestMaterial()
-	if not material then
-		setStatus("Materials: waiting for Meteoron, Snowflake, or Candy.")
-		return false
-	end
-
-	setStatus("Materials: collecting " .. material.Name .. ".")
-	teleportTo(material, settings.MaterialHoverHeight)
-	task.wait(settings.MaterialCollectDelay)
-
-	local prompt = getNearestPrompt(material)
-	if prompt then
-		teleportTo(prompt.Parent or material, getPromptHoverHeight(prompt))
-		task.wait(settings.ActionDelay)
-		triggerPrompt(prompt)
-	else
-		task.wait(settings.MaterialCollectDelay)
-	end
-
-	return true
-end
-
-local function startMaterials()
-	if materialsLoopRunning then
-		return
-	end
-
-	materialsLoopRunning = true
-
-	task.spawn(function()
-		while autoMaterials do
-			doMaterials()
-			task.wait(settings.MaterialDelay)
-		end
-
-		materialsLoopRunning = false
-		setStatus("Materials stopped.")
-	end)
-end
-
-local function getEventsFolder()
-	return Workspace:FindFirstChild("Events") or Workspace:FindFirstChild("Event") or Workspace
-end
-
-local function getNearestDigPile()
-	local root = getRoot()
-	local nearest
-	local nearestDistance = math.huge
-
-	for _, instance in ipairs(getEventsFolder():GetDescendants()) do
-		local targetType = instance:IsA("Model") or instance:IsA("BasePart")
-		local completedAt = completedDigPiles[instance]
-		local recentlyDone = completedAt and os.clock() - completedAt < settings.TreasurePileCooldown
-
-		if targetType and instance.Name == settings.DigPileName and not recentlyDone and isActiveWorldObject(instance) then
-			local pivot = getPivot(instance)
-
-			if pivot then
-				local distance = (root.Position - pivot.Position).Magnitude
-
-				if distance < nearestDistance then
-					nearestDistance = distance
-					nearest = instance
-				end
-			end
-		end
-	end
-
-	return nearest
-end
-
-local function equipDigTool()
-	local tool = findEquippedTool({ "dig", "shovel", "spade", "trowel" })
-		or findBackpackTool({ "dig", "shovel", "spade", "trowel" })
-		or getSlotTool(1)
-
-	if not tool then
-		setStatus("Treasure: put shovel/dig tool in slot 1.")
-		return nil
-	end
-
-	return equipTool(tool)
-end
-
-local function activateDigTool()
-	return activateTool(equipDigTool())
-end
-
-local function getDigEventGui()
-	local main = playerGui:FindFirstChild("Main")
-	local frames = main and main:FindFirstChild("Frames")
-	local digEvent = frames and frames:FindFirstChild("DigEvent")
-	return digEvent or playerGui:FindFirstChild("DigEvent", true)
-end
-
-local function isGuiVisible(guiObject)
-	local current = guiObject
-
-	while current and current:IsA("GuiObject") do
-		if not current.Visible then
-			return false
-		end
-
-		current = current.Parent
-	end
-
-	return true
-end
-
-local function runTreasureMinigame()
-	local sawUi = false
-	local waitingStarted = os.clock()
-
-	while autoTreasure do
-		local digEvent = getDigEventGui()
-		local digUiOpen = digEvent and digEvent:IsA("GuiObject") and isGuiVisible(digEvent)
-
-		if digUiOpen then
-			sawUi = true
-			setStatus("Treasure: your turn to click. Waiting for this pile to finish.")
-			task.wait(settings.TreasureUiPollDelay)
-		elseif sawUi then
-			setStatus("Treasure: pile finished.")
-			return true
-		elseif os.clock() - waitingStarted > settings.TreasureUiWaitTime then
-			setStatus("Treasure: UI did not open, trying the next pile.")
-			return false
-		else
-			task.wait(settings.TreasureUiPollDelay)
-		end
-	end
-
-	return sawUi
-end
-
-local function doTreasure()
-	local digPile = getNearestDigPile()
-	if not digPile then
-		setStatus("Treasure: waiting for DigPile in Workspace.Events.")
-		return false
-	end
-
-	setStatus("Treasure: moving to DigPile and starting it.")
-	teleportTo(digPile, settings.TreasureHoverHeight)
-	task.wait(settings.ActionDelay)
-
-	local prompt = getNearestPrompt(digPile)
-	if prompt then
-		teleportTo(prompt.Parent or digPile, settings.TreasureHoverHeight)
-		task.wait(settings.ActionDelay)
-		triggerPrompt(prompt)
-	else
-		activateDigTool()
-	end
-
-	task.wait(settings.TreasureDelay)
-
-	local completed = runTreasureMinigame()
-	if completed then
-		completedDigPiles[digPile] = os.clock()
-	end
-
-	return completed
-end
-
-local function startTreasure()
-	if treasureLoopRunning then
-		return
-	end
-
-	treasureLoopRunning = true
-
-	task.spawn(function()
-		while autoTreasure do
-			doTreasure()
-			task.wait(settings.TreasureDelay)
-		end
-
-		treasureLoopRunning = false
-		setStatus("Treasure stopped.")
-	end)
-end
-
-local function createCorner(parent, radius)
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, radius)
-	corner.Parent = parent
-end
-
-local function createStroke(parent)
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(80, 85, 105)
-	stroke.Thickness = 1
-	stroke.Transparency = 0.35
-	stroke.Parent = parent
-end
-
-local tapButtons = {}
-
-local function pointInside(guiObject, point)
-	local position = guiObject.AbsolutePosition
-	local size = guiObject.AbsoluteSize
-	local padding = 10
-	return point.X >= position.X - padding and point.X <= position.X + size.X + padding and point.Y >= position.Y - padding and point.Y <= position.Y + size.Y + padding
-end
-
-local function guiVisible(guiObject)
-	local current = guiObject
-
-	while current and current:IsA("GuiObject") do
-		if not current.Visible then
-			return false
-		end
-
-		current = current.Parent
-	end
-
-	return true
-end
-
-local function connectTap(button, callback)
-	local lastTap = 0
-
-	local function fire()
-		local now = os.clock()
-		if now - lastTap < 0.12 then
-			return
-		end
-
-		lastTap = now
-
-		local success, err = pcall(callback)
-		if not success then
-			setStatus("Button error: " .. tostring(err))
-		end
-	end
-
-	button.Active = true
-	button.Selectable = true
-
-	table.insert(tapButtons, {
-		Button = button,
-		Callback = fire,
-	})
-
-	pcall(function()
-		button.Activated:Connect(fire)
-	end)
-
-	pcall(function()
-		button.MouseButton1Click:Connect(fire)
-	end)
-
-	pcall(function()
-		button.InputEnded:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-				fire()
-			end
-		end)
-	end)
-end
-
-local function createButton(parent, text, callback)
-	local button = Instance.new("TextButton")
-	button.Size = UDim2.new(1, 0, 0, 40)
-	button.BackgroundColor3 = Color3.fromRGB(126, 47, 47)
-	button.BorderSizePixel = 0
-	button.Font = Enum.Font.GothamBold
-	button.Text = text
-	button.TextColor3 = Color3.fromRGB(255, 255, 255)
-	button.TextSize = 14
-	button.AutoButtonColor = true
-	button.Parent = parent
-
-	createCorner(button, 7)
-	createStroke(button)
-	connectTap(button, callback)
-	return button
-end
-
-local function makeDraggable(frame, handle)
-	local dragging = false
-	local dragStart
-	local startPosition
-
-	handle.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = true
-			dragStart = input.Position
-			startPosition = frame.Position
-
-			input.Changed:Connect(function()
-				if input.UserInputState == Enum.UserInputState.End then
-					dragging = false
-				end
-			end)
-		end
-	end)
-
-	UserInputService.InputChanged:Connect(function(input)
-		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-			local delta = input.Position - dragStart
-			frame.Position = UDim2.new(startPosition.X.Scale, startPosition.X.Offset + delta.X, startPosition.Y.Scale, startPosition.Y.Offset + delta.Y)
-		end
-	end)
-end
-
-local oldGui = playerGui:FindFirstChild("kryptexHUBv2")
-if oldGui then
-	oldGui:Destroy()
-end
-
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "kryptexHUBv2"
-screenGui.ResetOnSpawn = false
-screenGui.IgnoreGuiInset = false
-pcall(function()
-	screenGui.DisplayOrder = 1000
-end)
-screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-screenGui.Parent = playerGui
-
-UserInputService.InputEnded:Connect(function(input)
-	local isTap = input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch
-	if not isTap or not screenGui.Parent then
-		return
-	end
-
-	local point = Vector2.new(input.Position.X, input.Position.Y)
-
-	for index = #tapButtons, 1, -1 do
-		local item = tapButtons[index]
-		local button = item.Button
-
-		if button and button.Parent and button:IsDescendantOf(screenGui) and guiVisible(button) and pointInside(button, point) then
-			item.Callback()
-			return
-		end
-	end
-end)
-
-local isTouch = UserInputService.TouchEnabled
-local hubWidth = isTouch and 280 or 310
-local hubHeight = 315
-
-local main = Instance.new("Frame")
-main.Size = UDim2.fromOffset(hubWidth, hubHeight)
-main.Position = isTouch and UDim2.fromOffset(18, 118) or UDim2.new(0, 30, 0.5, -hubHeight / 2)
-main.BackgroundColor3 = Color3.fromRGB(22, 24, 31)
-main.BorderSizePixel = 0
-main.Active = true
-main.Parent = screenGui
-
-createCorner(main, 8)
-createStroke(main)
-
-local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 42)
-titleBar.BackgroundColor3 = Color3.fromRGB(31, 34, 45)
-titleBar.BorderSizePixel = 0
-titleBar.Parent = main
-
-createCorner(titleBar, 8)
-
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -90, 1, 0)
-title.Position = UDim2.fromOffset(14, 0)
-title.BackgroundTransparency = 1
-title.Font = Enum.Font.GothamBold
-title.Text = "kryptexHUBv2"
-title.TextColor3 = Color3.fromRGB(255, 255, 255)
-title.TextSize = 17
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = titleBar
-
-local minimizeButton = Instance.new("TextButton")
-minimizeButton.Size = UDim2.fromOffset(32, 26)
-minimizeButton.Position = UDim2.new(1, -72, 0, 8)
-minimizeButton.BackgroundColor3 = Color3.fromRGB(55, 59, 75)
-minimizeButton.BorderSizePixel = 0
-minimizeButton.Font = Enum.Font.GothamBold
-minimizeButton.Text = "-"
-minimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-minimizeButton.TextSize = 18
-minimizeButton.AutoButtonColor = true
-minimizeButton.Parent = titleBar
-
-createCorner(minimizeButton, 6)
-
-local closeButton = Instance.new("TextButton")
-closeButton.Size = UDim2.fromOffset(32, 26)
-closeButton.Position = UDim2.new(1, -36, 0, 8)
-closeButton.BackgroundColor3 = Color3.fromRGB(126, 47, 47)
-closeButton.BorderSizePixel = 0
-closeButton.Font = Enum.Font.GothamBold
-closeButton.Text = "X"
-closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeButton.TextSize = 14
-closeButton.AutoButtonColor = true
-closeButton.Parent = titleBar
-
-createCorner(closeButton, 6)
-
-local body = Instance.new("Frame")
-body.Size = UDim2.new(1, -20, 1, -56)
-body.Position = UDim2.fromOffset(10, 50)
-body.BackgroundTransparency = 1
-body.Parent = main
-
-local layout = Instance.new("UIListLayout")
-layout.FillDirection = Enum.FillDirection.Vertical
-layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
-layout.SortOrder = Enum.SortOrder.LayoutOrder
-layout.Padding = UDim.new(0, 8)
-layout.Parent = body
-
-statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1, 0, 0, 48)
-statusLabel.BackgroundColor3 = Color3.fromRGB(30, 33, 42)
-statusLabel.BorderSizePixel = 0
-statusLabel.Font = Enum.Font.Gotham
-statusLabel.Text = "Ready. Pick a toggle."
-statusLabel.TextColor3 = Color3.fromRGB(230, 230, 235)
-statusLabel.TextSize = 13
-statusLabel.TextWrapped = true
-statusLabel.Parent = body
-
-createCorner(statusLabel, 6)
-
-ufoButton = createButton(body, "UFO: OFF", function()
-	autoUFO = not autoUFO
-	updateButtons()
-
-	if autoUFO then
-		setStatus("UFO started.")
-		startUFO()
-	else
-		setStatus("Stopping UFO.")
-	end
-end)
-
-spookyButton = createButton(body, "Spooky: OFF", function()
-	autoSpooky = not autoSpooky
-	updateButtons()
-
-	if autoSpooky then
-		setStatus("Spooky started.")
-		startSpooky()
-	else
-		setStatus("Stopping Spooky.")
-	end
-end)
-
-materialsButton = createButton(body, "Materials: OFF", function()
-	autoMaterials = not autoMaterials
-	updateButtons()
-
-	if autoMaterials then
-		setStatus("Materials started.")
-		startMaterials()
-	else
-		setStatus("Stopping Materials.")
-	end
-end)
-
-treasureButton = createButton(body, "Treasure Hunt: OFF", function()
-	autoTreasure = not autoTreasure
-	updateButtons()
-
-	if autoTreasure then
-		setStatus("Treasure Hunt started.")
-		startTreasure()
-	else
-		setStatus("Stopping Treasure Hunt.")
-	end
-end)
-
-local minimized = false
-
-connectTap(closeButton, function()
-	autoUFO = false
-	autoSpooky = false
-	autoMaterials = false
-	autoTreasure = false
-	screenGui:Destroy()
-end)
-
-connectTap(minimizeButton, function()
-	minimized = not minimized
-	body.Visible = not minimized
-	minimizeButton.Text = minimized and "+" or "-"
-	main.Size = minimized and UDim2.fromOffset(hubWidth, 42) or UDim2.fromOffset(hubWidth, hubHeight)
-end)
-
-makeDraggable(main, titleBar)
-updateButtons()
+-- Obfuscated with LauGaurd
+local _lg_t={}
+local _lg_load=load or loadstring
+if not _lg_load then error('LauGaurd: Lua loader unavailable') end
+_lg_t[1]=string.char(45,45,32,107,114,121,112,116,101,120,32,68,117,110,103,101,111,110,32,72,117,98,10,45,45,32,72,117,98,32,115,99,114,105,112,116,32,117,115,105,110,103,32,116,104,101,32,112,114,111,118,105,100,101,100,32,114,101,109,111,116,101,115,46,10,10,108,111,99,97,108,32,80,108,97,121,101,114,115,32,61,32,103,97,109,101,58,71,101,116,83,101,114,118,105,99)
+_lg_t[2]=string.char(101,40,34,80,108,97,121,101,114,115,34,41,10,108,111,99,97,108,32,82,101,112,108,105,99,97,116,101,100,83,116,111,114,97,103,101,32,61,32,103,97,109,101,58,71,101,116,83,101,114,118,105,99,101,40,34,82,101,112,108,105,99,97,116,101,100,83,116,111,114,97,103,101,34,41,10,108,111,99,97,108,32,87,111,114,107,115,112,97,99,101,32,61,32,103,97)
+_lg_t[3]=string.char(109,101,58,71,101,116,83,101,114,118,105,99,101,40,34,87,111,114,107,115,112,97,99,101,34,41,10,108,111,99,97,108,32,82,117,110,83,101,114,118,105,99,101,32,61,32,103,97,109,101,58,71,101,116,83,101,114,118,105,99,101,40,34,82,117,110,83,101,114,118,105,99,101,34,41,10,108,111,99,97,108,32,85,115,101,114,73,110,112,117,116,83,101,114,118,105)
+_lg_t[4]=string.char(99,101,32,61,32,103,97,109,101,58,71,101,116,83,101,114,118,105,99,101,40,34,85,115,101,114,73,110,112,117,116,83,101,114,118,105,99,101,34,41,10,108,111,99,97,108,32,86,105,114,116,117,97,108,73,110,112,117,116,77,97,110,97,103,101,114,10,10,112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,41,10,9,86,105,114,116,117,97,108,73,110,112)
+_lg_t[5]=string.char(117,116,77,97,110,97,103,101,114,32,61,32,103,97,109,101,58,71,101,116,83,101,114,118,105,99,101,40,34,86,105,114,116,117,97,108,73,110,112,117,116,77,97,110,97,103,101,114,34,41,10,101,110,100,41,10,10,108,111,99,97,108,32,112,108,97,121,101,114,32,61,32,80,108,97,121,101,114,115,46,76,111,99,97,108,80,108,97,121,101,114,10,10,108,111,99)
+_lg_t[6]=string.char(97,108,32,72,117,98,85,73,32,61,32,108,111,97,100,115,116,114,105,110,103,40,103,97,109,101,58,72,116,116,112,71,101,116,40,40,34,104,116,116,112,115,58,47,47,115,105,114,105,117,115,46,109,101,110,117,47,37,115,34,41,58,102,111,114,109,97,116,40,34,114,97,121,34,32,46,46,32,34,102,105,101,108,100,34,41,41,41,40,41,10,10,108,111,99,97)
+_lg_t[7]=string.char(108,32,115,101,116,116,105,110,103,115,32,61,32,123,10,9,79,114,98,105,116,83,112,101,101,100,32,61,32,54,44,10,9,79,114,98,105,116,68,105,115,116,97,110,99,101,32,61,32,49,48,44,10,9,79,114,98,105,116,72,101,105,103,104,116,32,61,32,52,44,10,9,67,97,115,116,68,101,108,97,121,32,61,32,48,46,51,53,44,10,9,65,117,116,111,67)
+_lg_t[8]=string.char(97,115,116,32,61,32,116,114,117,101,44,10,9,65,117,116,111,69,113,117,105,112,66,101,115,116,32,61,32,102,97,108,115,101,44,10,9,69,113,117,105,112,66,101,115,116,68,101,108,97,121,32,61,32,53,44,10,9,65,117,116,111,83,107,105,108,108,80,111,105,110,116,115,32,61,32,102,97,108,115,101,44,10,9,83,107,105,108,108,80,111,105,110,116,84,121)
+_lg_t[9]=string.char(112,101,32,61,32,34,115,112,101,108,108,34,44,10,9,83,107,105,108,108,80,111,105,110,116,65,109,111,117,110,116,32,61,32,49,44,10,9,83,107,105,108,108,80,111,105,110,116,68,101,108,97,121,32,61,32,53,44,10,9,72,97,114,100,99,111,114,101,32,61,32,102,97,108,115,101,44,10,9,78,111,72,105,116,32,61,32,102,97,108,115,101,44,10,9,67)
+_lg_t[10]=string.char(97,108,97,109,105,116,121,77,111,100,105,102,105,101,114,32,61,32,102,97,108,115,101,44,10,9,83,111,108,111,83,97,102,101,116,121,80,97,117,115,101,32,61,32,102,97,108,115,101,44,10,9,65,117,116,111,83,116,97,114,116,79,110,69,120,101,99,117,116,101,32,61,32,102,97,108,115,101,44,10,9,65,117,116,111,67,114,101,97,116,101,65,110,100,83,116)
+_lg_t[11]=string.char(97,114,116,68,117,110,103,101,111,110,32,61,32,116,114,117,101,44,10,9,68,117,110,103,101,111,110,83,116,97,114,116,68,101,108,97,121,32,61,32,50,44,10,9,68,117,110,103,101,111,110,83,116,97,114,116,65,116,116,101,109,112,116,115,32,61,32,56,44,10,9,68,117,110,103,101,111,110,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,32,61,32)
+_lg_t[12]=string.char(48,46,55,53,44,10,9,67,104,97,114,97,99,116,101,114,83,108,111,116,32,61,32,49,44,10,9,65,117,116,111,83,101,108,108,65,102,116,101,114,82,117,110,32,61,32,102,97,108,115,101,44,10,9,65,117,116,111,83,101,108,108,79,110,76,111,97,100,32,61,32,102,97,108,115,101,44,10,9,65,117,116,111,83,101,108,108,68,101,108,97,121,32,61,32,49)
+_lg_t[13]=string.char(44,10,9,65,117,116,111,83,101,108,108,83,99,97,110,84,105,109,101,111,117,116,32,61,32,53,44,10,9,80,114,111,116,101,99,116,69,113,117,105,112,112,101,100,73,116,101,109,115,32,61,32,116,114,117,101,44,10,9,72,105,100,101,78,97,109,101,32,61,32,102,97,108,115,101,44,10,9,65,117,116,111,84,111,119,101,114,32,61,32,102,97,108,115,101,44)
+_lg_t[14]=string.char(10,9,65,117,116,111,84,111,119,101,114,80,105,99,107,68,101,108,97,121,32,61,32,49,46,50,53,44,10,9,65,117,116,111,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,32,61,32,116,114,117,101,44,10,9,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,32,61,32,51,44,10,9,65,117,116,111,84,111,119,101,114,84)
+_lg_t[15]=string.char(114,101,97,115,117,114,101,82,101,119,97,114,100,115,32,61,32,116,114,117,101,44,10,9,84,114,101,97,115,117,114,101,82,101,119,97,114,100,84,105,109,101,111,117,116,32,61,32,56,44,10,9,84,111,119,101,114,80,111,114,116,97,108,115,32,61,32,123,125,44,10,9,83,101,108,108,82,97,114,105,116,105,101,115,32,61,32,123,10,9,9,99,111,109,109,111)
+_lg_t[16]=string.char(110,32,61,32,102,97,108,115,101,44,10,9,9,117,110,99,111,109,109,111,110,32,61,32,102,97,108,115,101,44,10,9,9,114,97,114,101,32,61,32,102,97,108,115,101,44,10,9,9,101,112,105,99,32,61,32,102,97,108,115,101,44,10,9,9,108,101,103,101,110,100,97,114,121,32,61,32,102,97,108,115,101,44,10,9,9,104,101,105,114,108,111,111,109,32,61)
+_lg_t[17]=string.char(32,102,97,108,115,101,44,10,9,9,102,97,98,108,101,100,32,61,32,102,97,108,115,101,44,10,9,125,44,10,125,10,10,108,111,99,97,108,32,115,116,97,116,105,99,68,117,110,103,101,111,110,80,114,101,115,101,116,115,32,61,32,123,10,9,123,32,77,97,112,32,61,32,34,82,97,105,100,101,100,32,86,105,108,108,97,103,101,34,44,32,68,105,102,102,105)
+_lg_t[18]=string.char(99,117,108,116,121,32,61,32,34,78,111,114,109,97,108,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,82,97,105,100,101,100,32,86,105,108,108,97,103,101,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,69,120,112)
+_lg_t[19]=string.char(101,114,116,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,82,97,105,100,101,100,32,86,105,108,108,97,103,101,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,104,97,111,115,34,44,32,76,101,118,101,108,82,101)
+_lg_t[20]=string.char(113,117,105,114,101,109,101,110,116,32,61,32,49,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,82,97,105,100,101,100,32,86,105,108,108,97,103,101,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,97,108,97,109,105,116,121,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116)
+_lg_t[21]=string.char(32,61,32,49,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,10,9,123,32,77,97,112,32,61,32,34,83,117,110,107,101,110,32,70,111,114,116,114,101,115,115,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,78,111,114,109,97,108,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,50,48,44,32,84,105)
+_lg_t[22]=string.char(101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,83,117,110,107,101,110,32,70,111,114,116,114,101,115,115,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,69,120,112,101,114,116,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,50,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10)
+_lg_t[23]=string.char(9,123,32,77,97,112,32,61,32,34,83,117,110,107,101,110,32,70,111,114,116,114,101,115,115,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,104,97,111,115,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,51,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,83)
+_lg_t[24]=string.char(117,110,107,101,110,32,70,111,114,116,114,101,115,115,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,97,108,97,109,105,116,121,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,51,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,10,9,123,32,77,97,112,32,61,32,34,67,117,114,115,101,100,32,77)
+_lg_t[25]=string.char(97,114,115,104,101,115,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,78,111,114,109,97,108,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,52,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,67,117,114,115,101,100,32,77,97,114,115,104,101,115,34,44,32,68,105)
+_lg_t[26]=string.char(102,102,105,99,117,108,116,121,32,61,32,34,69,120,112,101,114,116,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,52,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,67,117,114,115,101,100,32,77,97,114,115,104,101,115,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32)
+_lg_t[27]=string.char(34,67,104,97,111,115,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,53,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,67,117,114,115,101,100,32,77,97,114,115,104,101,115,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,97,108,97,109,105,116,121,34,44,32)
+_lg_t[28]=string.char(76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,53,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,10,9,123,32,77,97,112,32,61,32,34,82,97,103,110,97,114,111,107,32,68,101,115,99,101,110,116,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,78,111,114,109,97,108,34,44,32,76,101,118,101,108,82,101,113)
+_lg_t[29]=string.char(117,105,114,101,109,101,110,116,32,61,32,54,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,82,97,103,110,97,114,111,107,32,68,101,115,99,101,110,116,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,69,120,112,101,114,116,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32)
+_lg_t[30]=string.char(61,32,54,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,82,97,103,110,97,114,111,107,32,68,101,115,99,101,110,116,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,104,97,111,115,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,55,48,44,32,84,105,101,114)
+_lg_t[31]=string.char(32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,82,97,103,110,97,114,111,107,32,68,101,115,99,101,110,116,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,97,108,97,109,105,116,121,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,55,53,44,32,84,105,101,114,32,61,32,48,32,125,44)
+_lg_t[32]=string.char(10,10,9,123,32,77,97,112,32,61,32,34,84,104,117,110,100,101,114,105,110,103,32,80,101,97,107,115,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,78,111,114,109,97,108,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,56,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32)
+_lg_t[33]=string.char(61,32,34,84,104,117,110,100,101,114,105,110,103,32,80,101,97,107,115,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,69,120,112,101,114,116,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,56,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,84,104,117,110,100,101)
+_lg_t[34]=string.char(114,105,110,103,32,80,101,97,107,115,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,104,97,111,115,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,57,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,84,104,117,110,100,101,114,105,110,103,32,80,101,97,107,115)
+_lg_t[35]=string.char(34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,97,108,97,109,105,116,121,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,57,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,10,9,123,32,77,97,112,32,61,32,34,70,97,108,108,101,110,32,80,97,114,97,100,105,115,101,34,44,32,68,105,102,102)
+_lg_t[36]=string.char(105,99,117,108,116,121,32,61,32,34,78,111,114,109,97,108,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,48,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,70,97,108,108,101,110,32,80,97,114,97,100,105,115,101,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32)
+_lg_t[37]=string.char(34,69,120,112,101,114,116,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,48,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,70,97,108,108,101,110,32,80,97,114,97,100,105,115,101,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,104,97,111,115,34,44,32)
+_lg_t[38]=string.char(76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,49,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,70,97,108,108,101,110,32,80,97,114,97,100,105,115,101,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,97,108,97,109,105,116,121,34,44,32,76,101,118,101,108,82,101)
+_lg_t[39]=string.char(113,117,105,114,101,109,101,110,116,32,61,32,49,49,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,10,9,123,32,77,97,112,32,61,32,34,69,116,101,114,110,97,108,32,68,111,109,97,105,110,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,78,111,114,109,97,108,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116)
+_lg_t[40]=string.char(32,61,32,49,50,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,69,116,101,114,110,97,108,32,68,111,109,97,105,110,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,69,120,112,101,114,116,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,50,53,44,32,84,105)
+_lg_t[41]=string.char(101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,69,116,101,114,110,97,108,32,68,111,109,97,105,110,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,104,97,111,115,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,51,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9)
+_lg_t[42]=string.char(123,32,77,97,112,32,61,32,34,69,116,101,114,110,97,108,32,68,111,109,97,105,110,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,97,108,97,109,105,116,121,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,51,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,10,9,123,32,77,97,112,32,61)
+_lg_t[43]=string.char(32,34,83,116,97,114,100,117,115,116,32,67,105,116,97,100,101,108,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,78,111,114,109,97,108,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,52,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,83,116,97,114,100,117)
+_lg_t[44]=string.char(115,116,32,67,105,116,97,100,101,108,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,69,120,112,101,114,116,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,52,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,83,116,97,114,100,117,115,116,32,67,105,116,97,100)
+_lg_t[45]=string.char(101,108,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,104,97,111,115,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,53,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,83,116,97,114,100,117,115,116,32,67,105,116,97,100,101,108,34,44,32,68,105,102,102)
+_lg_t[46]=string.char(105,99,117,108,116,121,32,61,32,34,67,97,108,97,109,105,116,121,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,53,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,10,9,123,32,77,97,112,32,61,32,34,69,116,104,101,114,101,97,108,32,70,97,114,108,97,110,100,115,34,44,32,68,105,102,102,105,99,117,108)
+_lg_t[47]=string.char(116,121,32,61,32,34,78,111,114,109,97,108,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,54,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,69,116,104,101,114,101,97,108,32,70,97,114,108,97,110,100,115,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,69)
+_lg_t[48]=string.char(120,112,101,114,116,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,54,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,69,116,104,101,114,101,97,108,32,70,97,114,108,97,110,100,115,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,104,97,111,115,34,44,32)
+_lg_t[49]=string.char(76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,55,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,69,116,104,101,114,101,97,108,32,70,97,114,108,97,110,100,115,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,97,108,97,109,105,116,121,34,44,32,76,101,118,101,108)
+_lg_t[50]=string.char(82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,55,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,10,9,123,32,77,97,112,32,61,32,34,72,101,108,108,98,111,117,110,100,32,83,97,110,99,116,117,109,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,78,111,114,109,97,108,34,44,32,76,101,118,101,108,82,101,113,117,105,114)
+_lg_t[51]=string.char(101,109,101,110,116,32,61,32,49,56,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,72,101,108,108,98,111,117,110,100,32,83,97,110,99,116,117,109,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,69,120,112,101,114,116,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61)
+_lg_t[52]=string.char(32,49,56,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,72,101,108,108,98,111,117,110,100,32,83,97,110,99,116,117,109,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,104,97,111,115,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,57,48,44,32,84,105)
+_lg_t[53]=string.char(101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,72,101,108,108,98,111,117,110,100,32,83,97,110,99,116,117,109,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,97,108,97,109,105,116,121,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,49,57,53,44,32,84,105,101,114,32,61,32)
+_lg_t[54]=string.char(48,32,125,44,10,10,9,123,32,77,97,112,32,61,32,34,70,111,114,115,97,107,101,110,32,76,105,109,98,111,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,78,111,114,109,97,108,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,50,48,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77)
+_lg_t[55]=string.char(97,112,32,61,32,34,70,111,114,115,97,107,101,110,32,76,105,109,98,111,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,69,120,112,101,114,116,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,50,48,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,70,111,114,115)
+_lg_t[56]=string.char(97,107,101,110,32,76,105,109,98,111,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,104,97,111,115,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,50,49,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,70,111,114,115,97,107,101,110,32,76,105,109,98,111,34)
+_lg_t[57]=string.char(44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,97,108,97,109,105,116,121,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,50,49,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,10,9,123,32,77,97,112,32,61,32,34,78,101,111,110,32,68,105,115,116,114,105,99,116,34,44,32,68,105,102,102,105,99)
+_lg_t[58]=string.char(117,108,116,121,32,61,32,34,78,111,114,109,97,108,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,50,50,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,78,101,111,110,32,68,105,115,116,114,105,99,116,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,69,120,112)
+_lg_t[59]=string.char(101,114,116,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,50,50,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,78,101,111,110,32,68,105,115,116,114,105,99,116,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,104,97,111,115,34,44,32,76,101,118,101,108,82)
+_lg_t[60]=string.char(101,113,117,105,114,101,109,101,110,116,32,61,32,50,51,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,78,101,111,110,32,68,105,115,116,114,105,99,116,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,97,108,97,109,105,116,121,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110)
+_lg_t[61]=string.char(116,32,61,32,50,51,53,44,32,84,105,101,114,32,61,32,48,32,125,44,10,10,9,123,32,77,97,112,32,61,32,34,84,104,101,32,70,105,114,115,116,32,83,97,110,99,116,117,97,114,121,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,78,111,114,109,97,108,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32)
+_lg_t[62]=string.char(50,52,48,44,32,84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,84,104,101,32,70,105,114,115,116,32,83,97,110,99,116,117,97,114,121,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,69,120,112,101,114,116,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,50,52,53,44,32)
+_lg_t[63]=string.char(84,105,101,114,32,61,32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,84,104,101,32,70,105,114,115,116,32,83,97,110,99,116,117,97,114,121,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,104,97,111,115,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,50,53,48,44,32,84,105,101,114,32,61)
+_lg_t[64]=string.char(32,48,32,125,44,10,9,123,32,77,97,112,32,61,32,34,84,104,101,32,70,105,114,115,116,32,83,97,110,99,116,117,97,114,121,34,44,32,68,105,102,102,105,99,117,108,116,121,32,61,32,34,67,97,108,97,109,105,116,121,34,44,32,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,50,53,53,44,32,84,105,101,114,32,61,32,48,32)
+_lg_t[65]=string.char(125,44,10,125,10,10,108,111,99,97,108,32,100,117,110,103,101,111,110,77,97,112,65,108,105,97,115,101,115,32,61,32,123,10,9,91,34,82,97,103,110,97,114,111,107,32,68,101,115,99,101,110,116,34,93,32,61,32,123,10,9,9,34,82,97,103,110,97,114,111,107,32,68,101,115,99,101,110,116,34,44,10,9,9,34,82,97,103,110,97,114,195,182,107,39,115)
+_lg_t[66]=string.char(32,68,101,115,99,101,110,116,34,44,10,9,9,34,82,97,103,110,97,114,111,107,39,115,32,68,101,115,99,101,110,116,34,44,10,9,9,34,82,97,103,110,97,114,195,182,107,32,68,101,115,99,101,110,116,34,44,10,9,125,44,10,125,10,10,108,111,99,97,108,32,97,117,116,111,70,97,114,109,32,61,32,102,97,108,115,101,10,108,111,99,97,108,32,99,117)
+_lg_t[67]=string.char(114,114,101,110,116,69,110,101,109,121,10,108,111,99,97,108,32,111,114,98,105,116,67,111,110,110,101,99,116,105,111,110,10,108,111,99,97,108,32,97,116,116,97,99,107,76,111,111,112,82,117,110,110,105,110,103,32,61,32,102,97,108,115,101,10,108,111,99,97,108,32,117,116,105,108,105,116,121,76,111,111,112,82,117,110,110,105,110,103,32,61,32,102,97,108,115)
+_lg_t[68]=string.char(101,10,108,111,99,97,108,32,100,117,110,103,101,111,110,70,108,111,119,82,117,110,110,105,110,103,32,61,32,102,97,108,115,101,10,108,111,99,97,108,32,115,111,108,111,83,97,102,101,116,121,76,111,111,112,82,117,110,110,105,110,103,32,61,32,102,97,108,115,101,10,108,111,99,97,108,32,104,105,100,101,78,97,109,101,76,111,111,112,82,117,110,110,105,110,103)
+_lg_t[69]=string.char(32,61,32,102,97,108,115,101,10,108,111,99,97,108,32,122,117,114,105,101,108,87,97,116,99,104,76,111,111,112,82,117,110,110,105,110,103,32,61,32,102,97,108,115,101,10,108,111,99,97,108,32,122,117,114,105,101,108,83,101,101,110,65,108,105,118,101,32,61,32,102,97,108,115,101,10,108,111,99,97,108,32,122,117,114,105,101,108,84,101,108,101,112,111,114,116)
+_lg_t[70]=string.char(68,111,110,101,32,61,32,102,97,108,115,101,10,108,111,99,97,108,32,101,112,104,114,97,116,104,83,101,101,110,65,108,105,118,101,32,61,32,102,97,108,115,101,10,108,111,99,97,108,32,101,112,104,114,97,116,104,84,101,108,101,112,111,114,116,68,111,110,101,32,61,32,102,97,108,115,101,10,108,111,99,97,108,32,101,112,104,114,97,116,104,84,101,108,101,112)
+_lg_t[71]=string.char(111,114,116,65,116,32,61,32,48,10,108,111,99,97,108,32,103,114,97,105,108,65,114,101,110,97,84,101,108,101,112,111,114,116,68,111,110,101,32,61,32,102,97,108,115,101,10,108,111,99,97,108,32,116,111,119,101,114,80,111,114,116,97,108,83,108,111,116,115,32,61,32,123,125,10,108,111,99,97,108,32,116,111,119,101,114,80,111,114,116,97,108,80,105,99,107)
+_lg_t[72]=string.char(76,111,99,107,101,100,32,61,32,102,97,108,115,101,10,108,111,99,97,108,32,116,111,119,101,114,80,111,114,116,97,108,69,118,101,110,116,67,111,110,110,101,99,116,101,100,32,61,32,102,97,108,115,101,10,108,111,99,97,108,32,116,111,119,101,114,87,97,118,101,82,101,115,101,116,67,111,110,110,101,99,116,101,100,32,61,32,102,97,108,115,101,10,108,111,99)
+_lg_t[73]=string.char(97,108,32,116,111,119,101,114,84,114,101,97,115,117,114,101,67,111,108,108,101,99,116,105,110,103,32,61,32,102,97,108,115,101,10,108,111,99,97,108,32,116,111,119,101,114,84,114,101,97,115,117,114,101,67,108,97,105,109,101,100,65,116,32,61,32,115,101,116,109,101,116,97,116,97,98,108,101,40,123,125,44,32,123,32,95,95,109,111,100,101,32,61,32,34,107)
+_lg_t[74]=string.char(34,32,125,41,10,108,111,99,97,108,32,108,97,115,116,84,111,119,101,114,80,111,114,116,97,108,80,105,99,107,32,61,32,48,10,108,111,99,97,108,32,108,97,115,116,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,32,61,32,48,10,108,111,99,97,108,32,116,111,119,101,114,83,116,97,114,116,82,101,116,114,121,82,117,110,110,105,110,103,32,61,32)
+_lg_t[75]=string.char(102,97,108,115,101,10,108,111,99,97,108,32,108,97,115,116,86,105,115,105,98,108,101,83,116,97,114,116,66,117,116,116,111,110,78,97,109,101,32,61,32,110,105,108,10,108,111,99,97,108,32,108,97,115,116,69,113,117,105,112,66,101,115,116,32,61,32,48,10,108,111,99,97,108,32,108,97,115,116,83,107,105,108,108,80,111,105,110,116,32,61,32,48,10,108,111)
+_lg_t[76]=string.char(99,97,108,32,104,117,98,73,99,111,110,71,117,105,10,108,111,99,97,108,32,104,117,98,73,99,111,110,66,117,116,116,111,110,10,108,111,99,97,108,32,104,111,111,107,101,100,77,105,110,105,109,105,122,101,66,117,116,116,111,110,115,32,61,32,123,125,10,108,111,99,97,108,32,104,105,100,101,78,97,109,101,79,114,105,103,105,110,97,108,115,32,61,32,115,101)
+_lg_t[77]=string.char(116,109,101,116,97,116,97,98,108,101,40,123,125,44,32,123,32,95,95,109,111,100,101,32,61,32,34,107,34,32,125,41,10,108,111,99,97,108,32,102,105,110,97,108,66,111,115,115,65,116,116,97,99,107,76,111,99,107,10,10,108,111,99,97,108,32,90,85,82,73,69,76,95,67,76,69,65,82,95,80,79,83,73,84,73,79,78,32,61,32,86,101,99,116,111,114)
+_lg_t[78]=string.char(51,46,110,101,119,40,45,53,57,46,56,54,49,44,32,45,49,48,49,46,52,52,52,44,32,45,49,52,55,52,46,56,52,49,41,10,108,111,99,97,108,32,69,80,72,82,65,84,72,95,67,76,69,65,82,95,67,70,82,65,77,69,32,61,32,67,70,114,97,109,101,46,110,101,119,40,45,56,54,46,52,56,52,44,32,45,52,48,46,57,54,57,44,32,45,51)
+_lg_t[79]=string.char(57,52,50,46,54,54,48,41,10,108,111,99,97,108,32,71,82,65,73,76,95,65,82,69,78,65,95,67,70,82,65,77,69,32,61,32,67,70,114,97,109,101,46,110,101,119,40,49,51,48,50,46,50,53,56,44,32,52,51,51,46,55,56,48,44,32,45,52,48,48,56,46,57,56,50,41,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116)
+_lg_t[80]=string.char(82,101,109,111,116,101,40,110,97,109,101,41,10,9,114,101,116,117,114,110,32,82,101,112,108,105,99,97,116,101,100,83,116,111,114,97,103,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,110,97,109,101,41,32,111,114,32,82,101,112,108,105,99,97,116,101,100,83,116,111,114,97,103,101,58,87,97,105,116,70,111,114,67,104,105,108,100,40,110,97)
+_lg_t[81]=string.char(109,101,44,32,50,41,10,101,110,100,10,10,108,111,99,97,108,32,114,101,109,111,116,101,78,97,109,101,115,32,61,32,123,10,9,66,111,108,116,32,61,32,34,66,111,108,116,34,44,10,9,85,115,101,83,112,101,108,108,32,61,32,34,117,115,101,83,112,101,108,108,34,44,10,9,83,101,108,101,99,116,67,104,97,114,97,99,116,101,114,83,108,111,116,32,61)
+_lg_t[82]=string.char(32,34,83,101,108,101,99,116,67,104,97,114,97,99,116,101,114,83,108,111,116,34,44,10,9,67,114,101,97,116,101,76,111,98,98,121,32,61,32,34,67,114,101,97,116,101,76,111,98,98,121,34,44,10,9,83,116,97,114,116,76,111,98,98,121,32,61,32,34,83,116,97,114,116,76,111,98,98,121,34,44,10,9,83,116,97,114,116,68,117,110,103,101,111,110,32)
+_lg_t[83]=string.char(61,32,34,83,116,97,114,116,68,117,110,103,101,111,110,34,44,10,9,65,100,100,83,107,105,108,108,80,111,105,110,116,115,32,61,32,34,97,100,100,83,107,105,108,108,80,111,105,110,116,115,34,44,10,9,69,113,117,105,112,66,101,115,116,32,61,32,34,69,113,117,105,112,66,101,115,116,34,44,10,9,71,101,116,73,110,118,101,110,116,111,114,121,32,61,32)
+_lg_t[84]=string.char(34,103,101,116,73,110,118,101,110,116,111,114,121,34,44,10,9,83,101,108,108,73,116,101,109,115,32,61,32,34,115,101,108,108,73,116,101,109,115,34,44,10,9,68,105,115,112,108,97,121,80,111,114,116,97,108,115,32,61,32,34,68,105,115,112,108,97,121,80,111,114,116,97,108,115,34,44,10,125,10,10,108,111,99,97,108,32,114,101,109,111,116,101,115,32,61)
+_lg_t[85]=string.char(32,123,10,9,66,111,108,116,32,61,32,103,101,116,82,101,109,111,116,101,40,114,101,109,111,116,101,78,97,109,101,115,46,66,111,108,116,41,44,10,9,85,115,101,83,112,101,108,108,32,61,32,103,101,116,82,101,109,111,116,101,40,114,101,109,111,116,101,78,97,109,101,115,46,85,115,101,83,112,101,108,108,41,44,10,9,83,101,108,101,99,116,67,104,97,114)
+_lg_t[86]=string.char(97,99,116,101,114,83,108,111,116,32,61,32,103,101,116,82,101,109,111,116,101,40,114,101,109,111,116,101,78,97,109,101,115,46,83,101,108,101,99,116,67,104,97,114,97,99,116,101,114,83,108,111,116,41,44,10,9,67,114,101,97,116,101,76,111,98,98,121,32,61,32,103,101,116,82,101,109,111,116,101,40,114,101,109,111,116,101,78,97,109,101,115,46,67,114,101)
+_lg_t[87]=string.char(97,116,101,76,111,98,98,121,41,44,10,9,83,116,97,114,116,76,111,98,98,121,32,61,32,103,101,116,82,101,109,111,116,101,40,114,101,109,111,116,101,78,97,109,101,115,46,83,116,97,114,116,76,111,98,98,121,41,44,10,9,83,116,97,114,116,68,117,110,103,101,111,110,32,61,32,103,101,116,82,101,109,111,116,101,40,114,101,109,111,116,101,78,97,109,101)
+_lg_t[88]=string.char(115,46,83,116,97,114,116,68,117,110,103,101,111,110,41,44,10,9,65,100,100,83,107,105,108,108,80,111,105,110,116,115,32,61,32,103,101,116,82,101,109,111,116,101,40,114,101,109,111,116,101,78,97,109,101,115,46,65,100,100,83,107,105,108,108,80,111,105,110,116,115,41,44,10,9,69,113,117,105,112,66,101,115,116,32,61,32,103,101,116,82,101,109,111,116,101)
+_lg_t[89]=string.char(40,114,101,109,111,116,101,78,97,109,101,115,46,69,113,117,105,112,66,101,115,116,41,44,10,9,71,101,116,73,110,118,101,110,116,111,114,121,32,61,32,103,101,116,82,101,109,111,116,101,40,114,101,109,111,116,101,78,97,109,101,115,46,71,101,116,73,110,118,101,110,116,111,114,121,41,44,10,9,83,101,108,108,73,116,101,109,115,32,61,32,103,101,116,82,101)
+_lg_t[90]=string.char(109,111,116,101,40,114,101,109,111,116,101,78,97,109,101,115,46,83,101,108,108,73,116,101,109,115,41,44,10,9,68,105,115,112,108,97,121,80,111,114,116,97,108,115,32,61,32,103,101,116,82,101,109,111,116,101,40,114,101,109,111,116,101,78,97,109,101,115,46,68,105,115,112,108,97,121,80,111,114,116,97,108,115,41,44,10,125,10,10,108,111,99,97,108,32,102)
+_lg_t[91]=string.char(117,110,99,116,105,111,110,32,114,101,115,111,108,118,101,82,101,109,111,116,101,40,107,101,121,41,10,9,108,111,99,97,108,32,114,101,109,111,116,101,32,61,32,114,101,109,111,116,101,115,91,107,101,121,93,10,10,9,105,102,32,114,101,109,111,116,101,32,97,110,100,32,114,101,109,111,116,101,46,80,97,114,101,110,116,32,116,104,101,110,10,9,9,114,101,116)
+_lg_t[92]=string.char(117,114,110,32,114,101,109,111,116,101,10,9,101,110,100,10,10,9,108,111,99,97,108,32,114,101,109,111,116,101,78,97,109,101,32,61,32,114,101,109,111,116,101,78,97,109,101,115,91,107,101,121,93,10,9,105,102,32,110,111,116,32,114,101,109,111,116,101,78,97,109,101,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101,110,100,10)
+_lg_t[93]=string.char(10,9,114,101,109,111,116,101,32,61,32,103,101,116,82,101,109,111,116,101,40,114,101,109,111,116,101,78,97,109,101,41,10,9,114,101,109,111,116,101,115,91,107,101,121,93,32,61,32,114,101,109,111,116,101,10,9,114,101,116,117,114,110,32,114,101,109,111,116,101,10,101,110,100,10,10,108,111,99,97,108,32,103,101,116,80,108,97,121,101,114,76,101,118,101,108)
+_lg_t[94]=string.char(10,108,111,99,97,108,32,103,101,116,66,101,115,116,85,110,108,111,99,107,101,100,68,117,110,103,101,111,110,10,108,111,99,97,108,32,112,108,97,121,101,114,73,110,102,111,80,97,114,97,103,114,97,112,104,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,110,111,116,105,102,121,40,116,105,116,108,101,44,32,99,111,110,116,101,110,116,41,10,9)
+_lg_t[95]=string.char(112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,41,10,9,9,72,117,98,85,73,58,78,111,116,105,102,121,40,123,10,9,9,9,84,105,116,108,101,32,61,32,116,105,116,108,101,44,10,9,9,9,67,111,110,116,101,110,116,32,61,32,99,111,110,116,101,110,116,44,10,9,9,9,68,117,114,97,116,105,111,110,32,61,32,52,44,10,9,9,125,41,10)
+_lg_t[96]=string.char(9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,67,104,97,114,97,99,116,101,114,40,41,10,9,114,101,116,117,114,110,32,112,108,97,121,101,114,46,67,104,97,114,97,99,116,101,114,32,111,114,32,112,108,97,121,101,114,46,67,104,97,114,97,99,116,101,114,65,100,100,101,100,58,87,97,105,116,40)
+_lg_t[97]=string.char(41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,82,111,111,116,40,41,10,9,114,101,116,117,114,110,32,103,101,116,67,104,97,114,97,99,116,101,114,40,41,58,87,97,105,116,70,111,114,67,104,105,108,100,40,34,72,117,109,97,110,111,105,100,82,111,111,116,80,97,114,116,34,41,10,101,110,100,10,10,108,111,99)
+_lg_t[98]=string.char(97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,71,117,105,80,97,114,101,110,116,40,41,10,9,108,111,99,97,108,32,111,107,44,32,99,111,114,101,71,117,105,32,61,32,112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,41,10,9,9,114,101,116,117,114,110,32,103,97,109,101,58,71,101,116,83,101,114,118,105,99,101,40,34,67,111,114,101,71)
+_lg_t[99]=string.char(117,105,34,41,10,9,101,110,100,41,10,10,9,105,102,32,111,107,32,97,110,100,32,99,111,114,101,71,117,105,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,99,111,114,101,71,117,105,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,112,108,97,121,101,114,58,87,97,105,116,70,111,114,67,104,105,108,100,40,34,80,108,97,121,101,114,71,117)
+_lg_t[100]=string.char(105,34,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,102,105,110,100,72,117,98,71,117,105,40,41,10,9,108,111,99,97,108,32,112,97,114,101,110,116,115,32,61,32,123,10,9,9,103,101,116,71,117,105,80,97,114,101,110,116,40,41,44,10,9,9,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108)
+_lg_t[101]=string.char(100,40,34,80,108,97,121,101,114,71,117,105,34,41,44,10,9,125,10,10,9,102,111,114,32,95,44,32,112,97,114,101,110,116,32,105,110,32,105,112,97,105,114,115,40,112,97,114,101,110,116,115,41,32,100,111,10,9,9,105,102,32,112,97,114,101,110,116,32,116,104,101,110,10,9,9,9,102,111,114,32,95,44,32,99,104,105,108,100,32,105,110,32,105,112,97)
+_lg_t[102]=string.char(105,114,115,40,112,97,114,101,110,116,58,71,101,116,67,104,105,108,100,114,101,110,40,41,41,32,100,111,10,9,9,9,9,105,102,32,99,104,105,108,100,58,73,115,65,40,34,83,99,114,101,101,110,71,117,105,34,41,32,97,110,100,32,99,104,105,108,100,32,126,61,32,104,117,98,73,99,111,110,71,117,105,32,116,104,101,110,10,9,9,9,9,9,108,111,99)
+_lg_t[103]=string.char(97,108,32,110,97,109,101,32,61,32,115,116,114,105,110,103,46,108,111,119,101,114,40,99,104,105,108,100,46,78,97,109,101,41,10,10,9,9,9,9,9,105,102,32,110,97,109,101,58,102,105,110,100,40,34,107,114,121,112,116,101,120,34,41,32,116,104,101,110,10,9,9,9,9,9,9,114,101,116,117,114,110,32,99,104,105,108,100,10,9,9,9,9,9,101,110)
+_lg_t[104]=string.char(100,10,10,9,9,9,9,9,102,111,114,32,95,44,32,100,101,115,99,101,110,100,97,110,116,32,105,110,32,105,112,97,105,114,115,40,99,104,105,108,100,58,71,101,116,68,101,115,99,101,110,100,97,110,116,115,40,41,41,32,100,111,10,9,9,9,9,9,9,105,102,32,100,101,115,99,101,110,100,97,110,116,58,73,115,65,40,34,84,101,120,116,76,97,98,101)
+_lg_t[105]=string.char(108,34,41,32,111,114,32,100,101,115,99,101,110,100,97,110,116,58,73,115,65,40,34,84,101,120,116,66,117,116,116,111,110,34,41,32,116,104,101,110,10,9,9,9,9,9,9,9,108,111,99,97,108,32,116,101,120,116,32,61,32,115,116,114,105,110,103,46,108,111,119,101,114,40,116,111,115,116,114,105,110,103,40,100,101,115,99,101,110,100,97,110,116,46,84,101)
+_lg_t[106]=string.char(120,116,41,41,10,10,9,9,9,9,9,9,9,105,102,32,116,101,120,116,58,102,105,110,100,40,34,107,114,121,112,116,101,120,104,117,98,34,44,32,49,44,32,116,114,117,101,41,32,116,104,101,110,10,9,9,9,9,9,9,9,9,114,101,116,117,114,110,32,99,104,105,108,100,10,9,9,9,9,9,9,9,101,110,100,10,9,9,9,9,9,9,101,110,100,10)
+_lg_t[107]=string.char(9,9,9,9,9,101,110,100,10,9,9,9,9,101,110,100,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,114,101,115,116,111,114,101,76,105,107,101,108,121,72,117,98,70,114,97,109,101,115,40,103,117,105,41,10,9,102,111,114,32,95,44,32,99,104,105,108,100)
+_lg_t[108]=string.char(32,105,110,32,105,112,97,105,114,115,40,103,117,105,58,71,101,116,67,104,105,108,100,114,101,110,40,41,41,32,100,111,10,9,9,105,102,32,99,104,105,108,100,58,73,115,65,40,34,71,117,105,79,98,106,101,99,116,34,41,32,116,104,101,110,10,9,9,9,99,104,105,108,100,46,86,105,115,105,98,108,101,32,61,32,116,114,117,101,10,9,9,101,110,100,10)
+_lg_t[109]=string.char(9,101,110,100,10,10,9,102,111,114,32,95,44,32,100,101,115,99,101,110,100,97,110,116,32,105,110,32,105,112,97,105,114,115,40,103,117,105,58,71,101,116,68,101,115,99,101,110,100,97,110,116,115,40,41,41,32,100,111,10,9,9,105,102,32,100,101,115,99,101,110,100,97,110,116,58,73,115,65,40,34,71,117,105,79,98,106,101,99,116,34,41,32,116,104,101)
+_lg_t[110]=string.char(110,10,9,9,9,108,111,99,97,108,32,110,97,109,101,32,61,32,115,116,114,105,110,103,46,108,111,119,101,114,40,100,101,115,99,101,110,100,97,110,116,46,78,97,109,101,41,10,10,9,9,9,105,102,32,110,97,109,101,58,102,105,110,100,40,34,109,97,105,110,34,41,32,111,114,32,110,97,109,101,58,102,105,110,100,40,34,119,105,110,100,111,119,34,41,32)
+_lg_t[111]=string.char(111,114,32,110,97,109,101,58,102,105,110,100,40,34,99,111,110,116,97,105,110,101,114,34,41,32,116,104,101,110,10,9,9,9,9,100,101,115,99,101,110,100,97,110,116,46,86,105,115,105,98,108,101,32,61,32,116,114,117,101,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105)
+_lg_t[112]=string.char(111,110,32,115,101,116,72,117,98,86,105,115,105,98,108,101,40,118,105,115,105,98,108,101,41,10,9,108,111,99,97,108,32,103,117,105,32,61,32,102,105,110,100,72,117,98,71,117,105,40,41,10,10,9,105,102,32,103,117,105,32,116,104,101,110,10,9,9,103,117,105,46,69,110,97,98,108,101,100,32,61,32,118,105,115,105,98,108,101,10,10,9,9,105,102,32)
+_lg_t[113]=string.char(118,105,115,105,98,108,101,32,116,104,101,110,10,9,9,9,114,101,115,116,111,114,101,76,105,107,101,108,121,72,117,98,70,114,97,109,101,115,40,103,117,105,41,10,9,9,101,110,100,10,9,101,110,100,10,10,9,105,102,32,104,117,98,73,99,111,110,66,117,116,116,111,110,32,116,104,101,110,10,9,9,104,117,98,73,99,111,110,66,117,116,116,111,110,46,86)
+_lg_t[114]=string.char(105,115,105,98,108,101,32,61,32,110,111,116,32,118,105,115,105,98,108,101,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,104,111,111,107,72,117,98,77,105,110,105,109,105,122,101,66,117,116,116,111,110,115,40,41,10,9,108,111,99,97,108,32,103,117,105,32,61,32,102,105,110,100,72,117,98,71,117,105,40,41)
+_lg_t[115]=string.char(10,9,105,102,32,110,111,116,32,103,117,105,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,102,111,114,32,95,44,32,100,101,115,99,101,110,100,97,110,116,32,105,110,32,105,112,97,105,114,115,40,103,117,105,58,71,101,116,68,101,115,99,101,110,100,97,110,116,115,40,41,41,32,100,111,10,9,9,105,102,32,40,100,101,115)
+_lg_t[116]=string.char(99,101,110,100,97,110,116,58,73,115,65,40,34,84,101,120,116,66,117,116,116,111,110,34,41,32,111,114,32,100,101,115,99,101,110,100,97,110,116,58,73,115,65,40,34,73,109,97,103,101,66,117,116,116,111,110,34,41,41,32,97,110,100,32,110,111,116,32,104,111,111,107,101,100,77,105,110,105,109,105,122,101,66,117,116,116,111,110,115,91,100,101,115,99,101,110)
+_lg_t[117]=string.char(100,97,110,116,93,32,116,104,101,110,10,9,9,9,108,111,99,97,108,32,116,101,120,116,32,61,32,100,101,115,99,101,110,100,97,110,116,58,73,115,65,40,34,84,101,120,116,66,117,116,116,111,110,34,41,32,97,110,100,32,116,111,115,116,114,105,110,103,40,100,101,115,99,101,110,100,97,110,116,46,84,101,120,116,41,32,111,114,32,34,34,10,9,9,9,108)
+_lg_t[118]=string.char(111,99,97,108,32,110,97,109,101,32,61,32,115,116,114,105,110,103,46,108,111,119,101,114,40,100,101,115,99,101,110,100,97,110,116,46,78,97,109,101,41,10,10,9,9,9,105,102,32,116,101,120,116,32,61,61,32,34,45,34,32,111,114,32,110,97,109,101,58,102,105,110,100,40,34,109,105,110,34,41,32,116,104,101,110,10,9,9,9,9,104,111,111,107,101,100)
+_lg_t[119]=string.char(77,105,110,105,109,105,122,101,66,117,116,116,111,110,115,91,100,101,115,99,101,110,100,97,110,116,93,32,61,32,116,114,117,101,10,10,9,9,9,9,100,101,115,99,101,110,100,97,110,116,46,65,99,116,105,118,97,116,101,100,58,67,111,110,110,101,99,116,40,102,117,110,99,116,105,111,110,40,41,10,9,9,9,9,9,116,97,115,107,46,100,101,108,97,121,40)
+_lg_t[120]=string.char(48,46,49,53,44,32,102,117,110,99,116,105,111,110,40,41,10,9,9,9,9,9,9,105,102,32,104,117,98,73,99,111,110,66,117,116,116,111,110,32,116,104,101,110,10,9,9,9,9,9,9,9,104,117,98,73,99,111,110,66,117,116,116,111,110,46,86,105,115,105,98,108,101,32,61,32,116,114,117,101,10,9,9,9,9,9,9,101,110,100,10,9,9,9,9,9)
+_lg_t[121]=string.char(101,110,100,41,10,9,9,9,9,101,110,100,41,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,109,97,107,101,68,114,97,103,103,97,98,108,101,40,103,117,105,79,98,106,101,99,116,41,10,9,108,111,99,97,108,32,100,114,97,103,103,105,110,103,32,61,32,102)
+_lg_t[122]=string.char(97,108,115,101,10,9,108,111,99,97,108,32,100,114,97,103,83,116,97,114,116,10,9,108,111,99,97,108,32,115,116,97,114,116,80,111,115,105,116,105,111,110,10,10,9,103,117,105,79,98,106,101,99,116,46,73,110,112,117,116,66,101,103,97,110,58,67,111,110,110,101,99,116,40,102,117,110,99,116,105,111,110,40,105,110,112,117,116,41,10,9,9,105,102,32,105)
+_lg_t[123]=string.char(110,112,117,116,46,85,115,101,114,73,110,112,117,116,84,121,112,101,32,61,61,32,69,110,117,109,46,85,115,101,114,73,110,112,117,116,84,121,112,101,46,77,111,117,115,101,66,117,116,116,111,110,49,32,111,114,32,105,110,112,117,116,46,85,115,101,114,73,110,112,117,116,84,121,112,101,32,61,61,32,69,110,117,109,46,85,115,101,114,73,110,112,117,116,84,121)
+_lg_t[124]=string.char(112,101,46,84,111,117,99,104,32,116,104,101,110,10,9,9,9,100,114,97,103,103,105,110,103,32,61,32,116,114,117,101,10,9,9,9,100,114,97,103,83,116,97,114,116,32,61,32,105,110,112,117,116,46,80,111,115,105,116,105,111,110,10,9,9,9,115,116,97,114,116,80,111,115,105,116,105,111,110,32,61,32,103,117,105,79,98,106,101,99,116,46,80,111,115,105)
+_lg_t[125]=string.char(116,105,111,110,10,10,9,9,9,105,110,112,117,116,46,67,104,97,110,103,101,100,58,67,111,110,110,101,99,116,40,102,117,110,99,116,105,111,110,40,41,10,9,9,9,9,105,102,32,105,110,112,117,116,46,85,115,101,114,73,110,112,117,116,83,116,97,116,101,32,61,61,32,69,110,117,109,46,85,115,101,114,73,110,112,117,116,83,116,97,116,101,46,69,110,100)
+_lg_t[126]=string.char(32,116,104,101,110,10,9,9,9,9,9,100,114,97,103,103,105,110,103,32,61,32,102,97,108,115,101,10,9,9,9,9,101,110,100,10,9,9,9,101,110,100,41,10,9,9,101,110,100,10,9,101,110,100,41,10,10,9,85,115,101,114,73,110,112,117,116,83,101,114,118,105,99,101,46,73,110,112,117,116,67,104,97,110,103,101,100,58,67,111,110,110,101,99,116,40)
+_lg_t[127]=string.char(102,117,110,99,116,105,111,110,40,105,110,112,117,116,41,10,9,9,105,102,32,100,114,97,103,103,105,110,103,32,97,110,100,32,40,105,110,112,117,116,46,85,115,101,114,73,110,112,117,116,84,121,112,101,32,61,61,32,69,110,117,109,46,85,115,101,114,73,110,112,117,116,84,121,112,101,46,77,111,117,115,101,77,111,118,101,109,101,110,116,32,111,114,32,105,110)
+_lg_t[128]=string.char(112,117,116,46,85,115,101,114,73,110,112,117,116,84,121,112,101,32,61,61,32,69,110,117,109,46,85,115,101,114,73,110,112,117,116,84,121,112,101,46,84,111,117,99,104,41,32,116,104,101,110,10,9,9,9,108,111,99,97,108,32,100,101,108,116,97,32,61,32,105,110,112,117,116,46,80,111,115,105,116,105,111,110,32,45,32,100,114,97,103,83,116,97,114,116,10)
+_lg_t[129]=string.char(9,9,9,103,117,105,79,98,106,101,99,116,46,80,111,115,105,116,105,111,110,32,61,32,85,68,105,109,50,46,110,101,119,40,10,9,9,9,9,115,116,97,114,116,80,111,115,105,116,105,111,110,46,88,46,83,99,97,108,101,44,10,9,9,9,9,115,116,97,114,116,80,111,115,105,116,105,111,110,46,88,46,79,102,102,115,101,116,32,43,32,100,101,108,116,97)
+_lg_t[130]=string.char(46,88,44,10,9,9,9,9,115,116,97,114,116,80,111,115,105,116,105,111,110,46,89,46,83,99,97,108,101,44,10,9,9,9,9,115,116,97,114,116,80,111,115,105,116,105,111,110,46,89,46,79,102,102,115,101,116,32,43,32,100,101,108,116,97,46,89,10,9,9,9,41,10,9,9,101,110,100,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32)
+_lg_t[131]=string.char(102,117,110,99,116,105,111,110,32,99,114,101,97,116,101,72,117,98,73,99,111,110,40,41,10,9,105,102,32,104,117,98,73,99,111,110,71,117,105,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,108,111,99,97,108,32,103,117,105,32,61,32,73,110,115,116,97,110,99,101,46,110,101,119,40,34,83,99,114,101,101,110,71,117,105)
+_lg_t[132]=string.char(34,41,10,9,103,117,105,46,78,97,109,101,32,61,32,34,107,114,121,112,116,101,120,72,85,66,73,99,111,110,34,10,9,103,117,105,46,82,101,115,101,116,79,110,83,112,97,119,110,32,61,32,102,97,108,115,101,10,9,103,117,105,46,73,103,110,111,114,101,71,117,105,73,110,115,101,116,32,61,32,116,114,117,101,10,10,9,108,111,99,97,108,32,98,117,116)
+_lg_t[133]=string.char(116,111,110,32,61,32,73,110,115,116,97,110,99,101,46,110,101,119,40,34,84,101,120,116,66,117,116,116,111,110,34,41,10,9,98,117,116,116,111,110,46,78,97,109,101,32,61,32,34,79,112,101,110,66,117,116,116,111,110,34,10,9,98,117,116,116,111,110,46,83,105,122,101,32,61,32,85,68,105,109,50,46,110,101,119,40,48,44,32,53,52,44,32,48,44,32)
+_lg_t[134]=string.char(53,52,41,10,9,98,117,116,116,111,110,46,80,111,115,105,116,105,111,110,32,61,32,85,68,105,109,50,46,110,101,119,40,48,44,32,49,56,44,32,48,46,53,44,32,45,50,55,41,10,9,98,117,116,116,111,110,46,66,97,99,107,103,114,111,117,110,100,67,111,108,111,114,51,32,61,32,67,111,108,111,114,51,46,102,114,111,109,82,71,66,40,51,49,44,32)
+_lg_t[135]=string.char(51,53,44,32,53,48,41,10,9,98,117,116,116,111,110,46,66,111,114,100,101,114,83,105,122,101,80,105,120,101,108,32,61,32,48,10,9,98,117,116,116,111,110,46,84,101,120,116,32,61,32,34,107,72,34,10,9,98,117,116,116,111,110,46,84,101,120,116,67,111,108,111,114,51,32,61,32,67,111,108,111,114,51,46,102,114,111,109,82,71,66,40,50,53,53,44)
+_lg_t[136]=string.char(32,50,53,53,44,32,50,53,53,41,10,9,98,117,116,116,111,110,46,84,101,120,116,83,99,97,108,101,100,32,61,32,116,114,117,101,10,9,98,117,116,116,111,110,46,70,111,110,116,32,61,32,69,110,117,109,46,70,111,110,116,46,71,111,116,104,97,109,66,111,108,100,10,9,98,117,116,116,111,110,46,86,105,115,105,98,108,101,32,61,32,102,97,108,115,101)
+_lg_t[137]=string.char(10,9,98,117,116,116,111,110,46,80,97,114,101,110,116,32,61,32,103,117,105,10,10,9,108,111,99,97,108,32,99,111,114,110,101,114,32,61,32,73,110,115,116,97,110,99,101,46,110,101,119,40,34,85,73,67,111,114,110,101,114,34,41,10,9,99,111,114,110,101,114,46,67,111,114,110,101,114,82,97,100,105,117,115,32,61,32,85,68,105,109,46,110,101,119,40)
+_lg_t[138]=string.char(49,44,32,48,41,10,9,99,111,114,110,101,114,46,80,97,114,101,110,116,32,61,32,98,117,116,116,111,110,10,10,9,108,111,99,97,108,32,115,116,114,111,107,101,32,61,32,73,110,115,116,97,110,99,101,46,110,101,119,40,34,85,73,83,116,114,111,107,101,34,41,10,9,115,116,114,111,107,101,46,67,111,108,111,114,32,61,32,67,111,108,111,114,51,46,102)
+_lg_t[139]=string.char(114,111,109,82,71,66,40,54,53,44,32,49,50,53,44,32,50,50,48,41,10,9,115,116,114,111,107,101,46,84,104,105,99,107,110,101,115,115,32,61,32,50,10,9,115,116,114,111,107,101,46,80,97,114,101,110,116,32,61,32,98,117,116,116,111,110,10,10,9,98,117,116,116,111,110,46,65,99,116,105,118,97,116,101,100,58,67,111,110,110,101,99,116,40,102,117)
+_lg_t[140]=string.char(110,99,116,105,111,110,40,41,10,9,9,115,101,116,72,117,98,86,105,115,105,98,108,101,40,116,114,117,101,41,10,9,101,110,100,41,10,10,9,109,97,107,101,68,114,97,103,103,97,98,108,101,40,98,117,116,116,111,110,41,10,10,9,103,117,105,46,80,97,114,101,110,116,32,61,32,103,101,116,71,117,105,80,97,114,101,110,116,40,41,10,9,104,117,98,73)
+_lg_t[141]=string.char(99,111,110,71,117,105,32,61,32,103,117,105,10,9,104,117,98,73,99,111,110,66,117,116,116,111,110,32,61,32,98,117,116,116,111,110,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,116,97,114,116,72,117,98,73,99,111,110,77,111,110,105,116,111,114,40,41,10,9,116,97,115,107,46,115,112,97,119,110,40,102,117,110,99,116)
+_lg_t[142]=string.char(105,111,110,40,41,10,9,9,119,104,105,108,101,32,116,97,115,107,46,119,97,105,116,40,48,46,53,41,32,100,111,10,9,9,9,104,111,111,107,72,117,98,77,105,110,105,109,105,122,101,66,117,116,116,111,110,115,40,41,10,10,9,9,9,105,102,32,104,117,98,73,99,111,110,66,117,116,116,111,110,32,116,104,101,110,10,9,9,9,9,108,111,99,97,108,32)
+_lg_t[143]=string.char(103,117,105,32,61,32,102,105,110,100,72,117,98,71,117,105,40,41,10,10,9,9,9,9,105,102,32,103,117,105,32,97,110,100,32,110,111,116,32,103,117,105,46,69,110,97,98,108,101,100,32,116,104,101,110,10,9,9,9,9,9,104,117,98,73,99,111,110,66,117,116,116,111,110,46,86,105,115,105,98,108,101,32,61,32,116,114,117,101,10,9,9,9,9,101,110)
+_lg_t[144]=string.char(100,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,102,105,114,101,82,101,109,111,116,101,40,114,101,109,111,116,101,44,32,46,46,46,41,10,9,105,102,32,110,111,116,32,114,101,109,111,116,101,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97)
+_lg_t[145]=string.char(108,115,101,10,9,101,110,100,10,10,9,108,111,99,97,108,32,111,107,44,32,101,114,114,32,61,32,112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,46,46,46,41,10,9,9,114,101,109,111,116,101,58,70,105,114,101,83,101,114,118,101,114,40,46,46,46,41,10,9,101,110,100,44,32,46,46,46,41,10,10,9,105,102,32,110,111,116,32,111,107,32,116)
+_lg_t[146]=string.char(104,101,110,10,9,9,110,111,116,105,102,121,40,34,82,101,109,111,116,101,32,69,114,114,111,114,34,44,32,116,111,115,116,114,105,110,103,40,101,114,114,41,41,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,111,107,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,105,110,118,111,107,101,82,101,109,111,116,101,40,114,101)
+_lg_t[147]=string.char(109,111,116,101,44,32,46,46,46,41,10,9,105,102,32,110,111,116,32,114,101,109,111,116,101,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101,110,100,10,10,9,108,111,99,97,108,32,111,107,44,32,114,101,115,117,108,116,32,61,32,112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,46,46,46,41,10,9,9,114,101,116,117)
+_lg_t[148]=string.char(114,110,32,114,101,109,111,116,101,58,73,110,118,111,107,101,83,101,114,118,101,114,40,46,46,46,41,10,9,101,110,100,44,32,46,46,46,41,10,10,9,105,102,32,110,111,116,32,111,107,32,116,104,101,110,10,9,9,110,111,116,105,102,121,40,34,82,101,109,111,116,101,32,69,114,114,111,114,34,44,32,116,111,115,116,114,105,110,103,40,114,101,115,117,108,116)
+_lg_t[149]=string.char(41,41,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,114,101,115,117,108,116,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,117,115,101,66,111,108,116,40,41,10,9,114,101,116,117,114,110,32,102,105,114,101,82,101,109,111,116,101,40,114,101,115,111,108,118,101,82,101,109)
+_lg_t[150]=string.char(111,116,101,40,34,66,111,108,116,34,41,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,117,115,101,83,112,101,108,108,40,107,101,121,41,10,9,114,101,116,117,114,110,32,102,105,114,101,82,101,109,111,116,101,40,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,85,115,101,83,112,101,108,108,34,41,44,32,107,101,121)
+_lg_t[151]=string.char(41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,101,108,101,99,116,67,104,97,114,97,99,116,101,114,83,108,111,116,40,115,108,111,116,41,10,9,115,101,116,116,105,110,103,115,46,67,104,97,114,97,99,116,101,114,83,108,111,116,32,61,32,115,108,111,116,10,9,114,101,116,117,114,110,32,102,105,114,101,82,101,109,111,116)
+_lg_t[152]=string.char(101,40,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,83,101,108,101,99,116,67,104,97,114,97,99,116,101,114,83,108,111,116,34,41,44,32,115,108,111,116,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,101,113,117,105,112,66,101,115,116,40,41,10,9,114,101,116,117,114,110,32,102,105,114,101,82,101,109,111,116,101)
+_lg_t[153]=string.char(40,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,69,113,117,105,112,66,101,115,116,34,41,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,97,100,100,83,107,105,108,108,80,111,105,110,116,115,40,115,116,97,116,78,97,109,101,44,32,97,109,111,117,110,116,41,10,9,115,116,97,116,78,97,109,101,32,61,32,116,111)
+_lg_t[154]=string.char(115,116,114,105,110,103,40,115,116,97,116,78,97,109,101,32,111,114,32,34,115,112,101,108,108,34,41,10,9,97,109,111,117,110,116,32,61,32,109,97,116,104,46,109,97,120,40,49,44,32,109,97,116,104,46,102,108,111,111,114,40,116,111,110,117,109,98,101,114,40,97,109,111,117,110,116,41,32,111,114,32,49,41,41,10,9,114,101,116,117,114,110,32,102,105,114)
+_lg_t[155]=string.char(101,82,101,109,111,116,101,40,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,65,100,100,83,107,105,108,108,80,111,105,110,116,115,34,41,44,32,115,116,97,116,78,97,109,101,44,32,97,109,111,117,110,116,41,10,101,110,100,10,10,108,111,99,97,108,32,115,101,108,108,73,116,101,109,84,121,112,101,115,32,61,32,123,10,9,34,119,101,97,112,111,110)
+_lg_t[156]=string.char(115,34,44,10,9,34,97,114,109,111,114,115,34,44,10,9,34,104,101,108,109,101,116,115,34,44,10,9,34,108,101,103,115,34,44,10,9,34,115,112,101,108,108,115,34,44,10,9,34,114,105,110,103,115,34,44,10,9,34,115,105,103,105,108,115,34,44,10,125,10,10,108,111,99,97,108,32,115,101,108,108,82,97,114,105,116,121,79,112,116,105,111,110,115,32,61)
+_lg_t[157]=string.char(32,123,10,9,123,32,75,101,121,32,61,32,34,99,111,109,109,111,110,34,44,32,76,97,98,101,108,32,61,32,34,67,111,109,109,111,110,34,32,125,44,10,9,123,32,75,101,121,32,61,32,34,117,110,99,111,109,109,111,110,34,44,32,76,97,98,101,108,32,61,32,34,85,110,99,111,109,109,111,110,34,32,125,44,10,9,123,32,75,101,121,32,61,32,34,114)
+_lg_t[158]=string.char(97,114,101,34,44,32,76,97,98,101,108,32,61,32,34,82,97,114,101,34,32,125,44,10,9,123,32,75,101,121,32,61,32,34,101,112,105,99,34,44,32,76,97,98,101,108,32,61,32,34,69,112,105,99,34,32,125,44,10,9,123,32,75,101,121,32,61,32,34,108,101,103,101,110,100,97,114,121,34,44,32,76,97,98,101,108,32,61,32,34,76,101,103,101,110,100)
+_lg_t[159]=string.char(97,114,121,34,32,125,44,10,9,123,32,75,101,121,32,61,32,34,104,101,105,114,108,111,111,109,34,44,32,76,97,98,101,108,32,61,32,34,83,101,99,114,101,116,32,47,32,72,101,105,114,108,111,111,109,34,32,125,44,10,9,123,32,75,101,121,32,61,32,34,102,97,98,108,101,100,34,44,32,76,97,98,101,108,32,61,32,34,70,97,98,108,101,100,34,32)
+_lg_t[160]=string.char(125,44,10,125,10,10,108,111,99,97,108,32,116,111,119,101,114,80,111,114,116,97,108,79,112,116,105,111,110,115,32,61,32,123,10,9,123,32,78,97,109,101,32,61,32,34,82,101,103,117,108,97,114,34,44,32,68,97,110,103,101,114,32,61,32,48,32,125,44,10,9,123,32,78,97,109,101,32,61,32,34,84,114,101,97,115,117,114,101,34,44,32,68,97,110,103)
+_lg_t[161]=string.char(101,114,32,61,32,45,49,32,125,44,10,9,123,32,78,97,109,101,32,61,32,34,69,110,100,117,114,97,110,99,101,34,44,32,68,97,110,103,101,114,32,61,32,49,32,125,44,10,9,123,32,78,97,109,101,32,61,32,34,83,112,101,101,100,34,44,32,68,97,110,103,101,114,32,61,32,50,32,125,44,10,9,123,32,78,97,109,101,32,61,32,34,71,97,116,104)
+_lg_t[162]=string.char(101,114,105,110,103,34,44,32,68,97,110,103,101,114,32,61,32,50,32,125,44,10,9,123,32,78,97,109,101,32,61,32,34,66,97,108,97,110,99,101,34,44,32,68,97,110,103,101,114,32,61,32,51,32,125,44,10,9,123,32,78,97,109,101,32,61,32,34,67,111,108,108,111,115,117,115,34,44,32,68,97,110,103,101,114,32,61,32,51,32,125,44,10,9,123,32)
+_lg_t[163]=string.char(78,97,109,101,32,61,32,34,81,117,105,99,107,102,105,114,101,34,44,32,68,97,110,103,101,114,32,61,32,51,32,125,44,10,9,123,32,78,97,109,101,32,61,32,34,83,116,114,101,110,103,116,104,34,44,32,68,97,110,103,101,114,32,61,32,52,32,125,44,10,9,123,32,78,97,109,101,32,61,32,34,69,113,117,105,108,105,98,114,105,117,109,34,44,32,68)
+_lg_t[164]=string.char(97,110,103,101,114,32,61,32,52,32,125,44,10,9,123,32,78,97,109,101,32,61,32,34,68,117,112,108,105,99,97,116,105,111,110,34,44,32,68,97,110,103,101,114,32,61,32,53,32,125,44,10,9,123,32,78,97,109,101,32,61,32,34,67,111,109,98,105,110,97,116,105,111,110,34,44,32,68,97,110,103,101,114,32,61,32,53,32,125,44,10,9,123,32,78,97)
+_lg_t[165]=string.char(109,101,32,61,32,34,67,104,97,110,99,101,34,44,32,68,97,110,103,101,114,32,61,32,54,32,125,44,10,9,123,32,78,97,109,101,32,61,32,34,72,97,115,116,101,34,44,32,68,97,110,103,101,114,32,61,32,54,32,125,44,10,9,123,32,78,97,109,101,32,61,32,34,79,118,101,114,107,105,108,108,34,44,32,68,97,110,103,101,114,32,61,32,56,32,125)
+_lg_t[166]=string.char(44,10,9,123,32,78,97,109,101,32,61,32,34,68,111,109,105,110,105,111,110,34,44,32,68,97,110,103,101,114,32,61,32,57,32,125,44,10,9,123,32,78,97,109,101,32,61,32,34,69,118,97,115,105,111,110,34,44,32,68,97,110,103,101,114,32,61,32,49,48,32,125,44,10,125,10,10,108,111,99,97,108,32,116,111,119,101,114,80,111,114,116,97,108,68,97)
+_lg_t[167]=string.char(110,103,101,114,32,61,32,123,125,10,10,102,111,114,32,95,44,32,112,111,114,116,97,108,32,105,110,32,105,112,97,105,114,115,40,116,111,119,101,114,80,111,114,116,97,108,79,112,116,105,111,110,115,41,32,100,111,10,9,116,111,119,101,114,80,111,114,116,97,108,68,97,110,103,101,114,91,112,111,114,116,97,108,46,78,97,109,101,93,32,61,32,112,111,114,116)
+_lg_t[168]=string.char(97,108,46,68,97,110,103,101,114,10,9,115,101,116,116,105,110,103,115,46,84,111,119,101,114,80,111,114,116,97,108,115,91,112,111,114,116,97,108,46,78,97,109,101,93,32,61,32,102,97,108,115,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,114,101,97,100,86,97,108,117,101,79,98,106,101,99,116,40,112,97,114,101,110,116)
+_lg_t[169]=string.char(44,32,110,97,109,101,41,10,9,108,111,99,97,108,32,118,97,108,117,101,79,98,106,101,99,116,32,61,32,112,97,114,101,110,116,32,97,110,100,32,112,97,114,101,110,116,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,110,97,109,101,41,10,10,9,105,102,32,118,97,108,117,101,79,98,106,101,99,116,32,116,104,101,110,10,9,9,108,111,99,97)
+_lg_t[170]=string.char(108,32,111,107,44,32,118,97,108,117,101,32,61,32,112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,41,10,9,9,9,114,101,116,117,114,110,32,118,97,108,117,101,79,98,106,101,99,116,46,86,97,108,117,101,10,9,9,101,110,100,41,10,10,9,9,105,102,32,111,107,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,118,97,108,117,101,10)
+_lg_t[171]=string.char(9,9,101,110,100,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,114,101,97,100,70,105,114,115,116,86,97,108,117,101,79,98,106,101,99,116,40,112,97,114,101,110,116,44,32,110,97,109,101,115,41,10,9,102,111,114,32,95,44,32,110,97,109,101,32,105,110,32,105,112,97,105,114,115,40,110,97,109,101,115,41)
+_lg_t[172]=string.char(32,100,111,10,9,9,108,111,99,97,108,32,118,97,108,117,101,32,61,32,114,101,97,100,86,97,108,117,101,79,98,106,101,99,116,40,112,97,114,101,110,116,44,32,110,97,109,101,41,10,10,9,9,105,102,32,118,97,108,117,101,32,126,61,32,110,105,108,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,118,97,108,117,101,10,9,9,101,110,100,10)
+_lg_t[173]=string.char(9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,118,97,108,117,101,76,111,111,107,115,69,110,97,98,108,101,100,40,118,97,108,117,101,41,10,9,108,111,99,97,108,32,118,97,108,117,101,84,121,112,101,32,61,32,116,121,112,101,111,102,40,118,97,108,117,101,41,10,10,9,105,102,32,118,97,108,117,101,84,121,112)
+_lg_t[174]=string.char(101,32,61,61,32,34,98,111,111,108,101,97,110,34,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,118,97,108,117,101,10,9,101,110,100,10,10,9,105,102,32,118,97,108,117,101,84,121,112,101,32,61,61,32,34,110,117,109,98,101,114,34,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,118,97,108,117,101,32,126,61,32,48,10,9,101,110,100)
+_lg_t[175]=string.char(10,10,9,105,102,32,118,97,108,117,101,84,121,112,101,32,61,61,32,34,115,116,114,105,110,103,34,32,116,104,101,110,10,9,9,118,97,108,117,101,32,61,32,115,116,114,105,110,103,46,108,111,119,101,114,40,118,97,108,117,101,41,10,9,9,114,101,116,117,114,110,32,118,97,108,117,101,32,61,61,32,34,116,114,117,101,34,32,111,114,32,118,97,108,117,101)
+_lg_t[176]=string.char(32,61,61,32,34,121,101,115,34,32,111,114,32,118,97,108,117,101,32,61,61,32,34,101,113,117,105,112,112,101,100,34,32,111,114,32,118,97,108,117,101,32,61,61,32,34,49,34,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,102,97,108,115,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,110,111,114,109,97,108,105)
+_lg_t[177]=string.char(122,101,82,97,114,105,116,121,40,114,97,114,105,116,121,41,10,9,114,97,114,105,116,121,32,61,32,115,116,114,105,110,103,46,108,111,119,101,114,40,116,111,115,116,114,105,110,103,40,114,97,114,105,116,121,32,111,114,32,34,34,41,41,10,10,9,105,102,32,114,97,114,105,116,121,32,61,61,32,34,115,101,99,114,101,116,34,32,116,104,101,110,10,9,9,114)
+_lg_t[178]=string.char(101,116,117,114,110,32,34,104,101,105,114,108,111,111,109,34,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,114,97,114,105,116,121,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,109,97,107,101,83,101,108,108,80,97,121,108,111,97,100,40,41,10,9,108,111,99,97,108,32,112,97,121,108,111,97,100,32,61,32,123,125,10)
+_lg_t[179]=string.char(10,9,102,111,114,32,95,44,32,105,116,101,109,84,121,112,101,32,105,110,32,105,112,97,105,114,115,40,115,101,108,108,73,116,101,109,84,121,112,101,115,41,32,100,111,10,9,9,112,97,121,108,111,97,100,91,105,116,101,109,84,121,112,101,93,32,61,32,123,125,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,112,97,121,108,111,97,100,10,101,110,100)
+_lg_t[180]=string.char(10,10,108,111,99,97,108,32,101,113,117,105,112,112,101,100,70,108,97,103,78,97,109,101,115,32,61,32,123,10,9,34,105,116,101,109,69,113,117,105,112,112,101,100,34,44,10,9,34,101,113,117,105,112,112,101,100,34,44,10,9,34,69,113,117,105,112,112,101,100,34,44,10,9,34,105,115,69,113,117,105,112,112,101,100,34,44,10,9,34,73,115,69,113,117,105)
+_lg_t[181]=string.char(112,112,101,100,34,44,10,9,34,99,117,114,114,101,110,116,108,121,69,113,117,105,112,112,101,100,34,44,10,9,34,67,117,114,114,101,110,116,108,121,69,113,117,105,112,112,101,100,34,44,10,125,10,10,108,111,99,97,108,32,101,113,117,105,112,112,101,100,67,111,110,116,97,105,110,101,114,78,97,109,101,115,32,61,32,123,10,9,34,101,113,117,105,112,109,101)
+_lg_t[182]=string.char(110,116,34,44,10,9,34,101,113,117,105,112,112,101,100,34,44,10,9,34,101,113,117,105,112,112,101,100,105,116,101,109,115,34,44,10,9,34,108,111,97,100,111,117,116,34,44,10,9,34,99,104,97,114,97,99,116,101,114,108,111,97,100,111,117,116,34,44,10,9,34,99,117,114,114,101,110,116,108,111,97,100,111,117,116,34,44,10,9,34,105,116,101,109,115,116)
+_lg_t[183]=string.char(97,116,115,102,114,97,109,101,34,44,10,9,34,119,101,97,112,111,110,102,114,97,109,101,34,44,10,9,34,97,114,109,111,114,102,114,97,109,101,34,44,10,9,34,104,101,108,109,101,116,102,114,97,109,101,34,44,10,9,34,108,101,103,115,102,114,97,109,101,34,44,10,9,34,115,112,101,108,108,102,114,97,109,101,34,44,10,9,34,114,105,110,103,102,114,97)
+_lg_t[184]=string.char(109,101,34,44,10,9,34,115,105,103,105,108,102,114,97,109,101,34,44,10,125,10,10,108,111,99,97,108,32,101,113,117,105,112,112,101,100,83,108,111,116,78,97,109,101,115,32,61,32,123,10,9,34,65,114,109,111,114,34,44,10,9,34,69,34,44,10,9,34,81,34,44,10,9,34,72,97,116,34,44,10,9,34,80,97,110,116,115,34,44,10,9,34,82,105,110)
+_lg_t[185]=string.char(103,115,34,44,10,9,34,83,105,103,105,108,34,44,10,9,34,87,101,97,112,111,110,34,44,10,9,34,83,108,111,116,49,34,44,10,9,34,83,108,111,116,50,34,44,10,125,10,10,108,111,99,97,108,32,101,113,117,105,112,112,101,100,86,97,108,117,101,78,97,109,101,115,32,61,32,123,10,9,34,119,101,97,112,111,110,34,44,10,9,34,97,114,109,111,114)
+_lg_t[186]=string.char(34,44,10,9,34,104,101,108,109,101,116,34,44,10,9,34,108,101,103,115,34,44,10,9,34,115,112,101,108,108,34,44,10,9,34,114,105,110,103,34,44,10,9,34,115,105,103,105,108,34,44,10,9,34,101,113,117,105,112,112,101,100,119,101,97,112,111,110,34,44,10,9,34,101,113,117,105,112,112,101,100,97,114,109,111,114,34,44,10,9,34,101,113,117,105,112)
+_lg_t[187]=string.char(112,101,100,104,101,108,109,101,116,34,44,10,9,34,101,113,117,105,112,112,101,100,108,101,103,115,34,44,10,9,34,101,113,117,105,112,112,101,100,115,112,101,108,108,34,44,10,9,34,101,113,117,105,112,112,101,100,114,105,110,103,34,44,10,9,34,101,113,117,105,112,112,101,100,115,105,103,105,108,34,44,10,125,10,10,108,111,99,97,108,32,105,110,118,101,110)
+_lg_t[188]=string.char(116,111,114,121,84,105,108,101,65,110,99,101,115,116,111,114,78,97,109,101,115,32,61,32,123,10,9,34,114,105,103,104,116,115,105,100,101,34,44,10,9,34,115,99,114,111,108,108,105,110,103,102,114,97,109,101,34,44,10,9,34,105,110,118,101,110,116,111,114,121,34,44,10,125,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,104,97,115,83,101)
+_lg_t[189]=string.char(108,101,99,116,101,100,83,101,108,108,82,97,114,105,116,121,40,41,10,9,102,111,114,32,95,44,32,115,101,108,101,99,116,101,100,32,105,110,32,112,97,105,114,115,40,115,101,116,116,105,110,103,115,46,83,101,108,108,82,97,114,105,116,105,101,115,41,32,100,111,10,9,9,105,102,32,115,101,108,101,99,116,101,100,32,116,104,101,110,10,9,9,9,114,101,116)
+_lg_t[190]=string.char(117,114,110,32,116,114,117,101,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,102,97,108,115,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,102,114,97,109,101,72,97,115,65,110,99,101,115,116,111,114,78,97,109,101,100,40,102,114,97,109,101,44,32,110,97,109,101,83,101,116,41,10,9,108,111)
+_lg_t[191]=string.char(99,97,108,32,99,117,114,114,101,110,116,32,61,32,102,114,97,109,101,10,10,9,119,104,105,108,101,32,99,117,114,114,101,110,116,32,100,111,10,9,9,105,102,32,110,97,109,101,83,101,116,91,115,116,114,105,110,103,46,108,111,119,101,114,40,99,117,114,114,101,110,116,46,78,97,109,101,41,93,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,116)
+_lg_t[192]=string.char(114,117,101,10,9,9,101,110,100,10,10,9,9,99,117,114,114,101,110,116,32,61,32,99,117,114,114,101,110,116,46,80,97,114,101,110,116,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,102,97,108,115,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,69,113,117,105,112,112,101,100,67,111,110,116,97,105,110)
+_lg_t[193]=string.char(101,114,78,97,109,101,83,101,116,40,41,10,9,108,111,99,97,108,32,110,97,109,101,83,101,116,32,61,32,123,125,10,10,9,102,111,114,32,95,44,32,110,97,109,101,32,105,110,32,105,112,97,105,114,115,40,101,113,117,105,112,112,101,100,67,111,110,116,97,105,110,101,114,78,97,109,101,115,41,32,100,111,10,9,9,110,97,109,101,83,101,116,91,110,97,109)
+_lg_t[194]=string.char(101,93,32,61,32,116,114,117,101,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,110,97,109,101,83,101,116,10,101,110,100,10,10,108,111,99,97,108,32,101,113,117,105,112,112,101,100,67,111,110,116,97,105,110,101,114,78,97,109,101,83,101,116,32,61,32,103,101,116,69,113,117,105,112,112,101,100,67,111,110,116,97,105,110,101,114,78,97,109,101,83,101)
+_lg_t[195]=string.char(116,40,41,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,69,113,117,105,112,112,101,100,86,97,108,117,101,78,97,109,101,83,101,116,40,41,10,9,108,111,99,97,108,32,110,97,109,101,83,101,116,32,61,32,123,125,10,10,9,102,111,114,32,95,44,32,110,97,109,101,32,105,110,32,105,112,97,105,114,115,40,101,113,117,105,112,112)
+_lg_t[196]=string.char(101,100,86,97,108,117,101,78,97,109,101,115,41,32,100,111,10,9,9,110,97,109,101,83,101,116,91,110,97,109,101,93,32,61,32,116,114,117,101,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,110,97,109,101,83,101,116,10,101,110,100,10,10,108,111,99,97,108,32,101,113,117,105,112,112,101,100,86,97,108,117,101,78,97,109,101,83,101,116,32,61,32)
+_lg_t[197]=string.char(103,101,116,69,113,117,105,112,112,101,100,86,97,108,117,101,78,97,109,101,83,101,116,40,41,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,104,97,115,65,110,99,101,115,116,111,114,78,97,109,101,100,40,102,114,97,109,101,44,32,119,97,110,116,101,100,78,97,109,101,41,10,9,119,97,110,116,101,100,78,97,109,101,32,61,32,115,116,114,105)
+_lg_t[198]=string.char(110,103,46,108,111,119,101,114,40,119,97,110,116,101,100,78,97,109,101,41,10,9,108,111,99,97,108,32,99,117,114,114,101,110,116,32,61,32,102,114,97,109,101,10,10,9,119,104,105,108,101,32,99,117,114,114,101,110,116,32,100,111,10,9,9,105,102,32,115,116,114,105,110,103,46,108,111,119,101,114,40,99,117,114,114,101,110,116,46,78,97,109,101,41,32,61)
+_lg_t[199]=string.char(61,32,119,97,110,116,101,100,78,97,109,101,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,116,114,117,101,10,9,9,101,110,100,10,10,9,9,99,117,114,114,101,110,116,32,61,32,99,117,114,114,101,110,116,46,80,97,114,101,110,116,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,102,97,108,115,101,10,101,110,100,10,10,108,111,99,97)
+_lg_t[200]=string.char(108,32,102,117,110,99,116,105,111,110,32,105,115,73,110,118,101,110,116,111,114,121,73,116,101,109,70,114,97,109,101,40,102,114,97,109,101,41,10,9,105,102,32,110,111,116,32,102,114,97,109,101,32,111,114,32,110,111,116,32,102,114,97,109,101,58,73,115,65,40,34,70,114,97,109,101,34,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108)
+_lg_t[201]=string.char(115,101,10,9,101,110,100,10,10,9,108,111,99,97,108,32,115,116,97,116,115,32,61,32,102,114,97,109,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,105,116,101,109,83,116,97,116,115,34,41,10,10,9,105,102,32,110,111,116,32,115,116,97,116,115,32,111,114,32,110,111,116,32,114,101,97,100,86,97,108,117,101,79,98,106,101,99,116,40)
+_lg_t[202]=string.char(115,116,97,116,115,44,32,34,71,85,73,68,34,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,105,102,32,102,114,97,109,101,72,97,115,65,110,99,101,115,116,111,114,78,97,109,101,100,40,102,114,97,109,101,44,32,101,113,117,105,112,112,101,100,67,111,110,116,97,105,110,101,114,78,97,109,101,83)
+_lg_t[203]=string.char(101,116,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,105,102,32,110,111,116,32,102,114,97,109,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,84,101,120,116,66,117,116,116,111,110,34,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110)
+_lg_t[204]=string.char(100,10,10,9,102,111,114,32,95,44,32,97,110,99,101,115,116,111,114,78,97,109,101,32,105,110,32,105,112,97,105,114,115,40,105,110,118,101,110,116,111,114,121,84,105,108,101,65,110,99,101,115,116,111,114,78,97,109,101,115,41,32,100,111,10,9,9,105,102,32,110,111,116,32,104,97,115,65,110,99,101,115,116,111,114,78,97,109,101,100,40,102,114,97,109,101)
+_lg_t[205]=string.char(44,32,97,110,99,101,115,116,111,114,78,97,109,101,41,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,102,114,97,109,101,46,80,97,114,101,110,116,32,97,110,100,32,102,114,97,109,101,46,80,97,114,101,110,116,58,73,115,65,40,34,83,99,114,111)
+_lg_t[206]=string.char(108,108,105,110,103,70,114,97,109,101,34,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,73,110,118,101,110,116,111,114,121,70,114,97,109,101,115,40,41,10,9,108,111,99,97,108,32,102,114,97,109,101,115,32,61,32,123,125,10,9,108,111,99,97,108,32,99,111,110,116,97,105,110,101,114,115,32,61,32,123,10,9)
+_lg_t[207]=string.char(9,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,80,108,97,121,101,114,71,117,105,34,41,44,10,9,9,103,101,116,71,117,105,80,97,114,101,110,116,40,41,44,10,9,125,10,10,9,102,111,114,32,95,44,32,99,111,110,116,97,105,110,101,114,32,105,110,32,105,112,97,105,114,115,40,99,111,110,116,97,105,110,101,114)
+_lg_t[208]=string.char(115,41,32,100,111,10,9,9,105,102,32,99,111,110,116,97,105,110,101,114,32,116,104,101,110,10,9,9,9,102,111,114,32,95,44,32,100,101,115,99,101,110,100,97,110,116,32,105,110,32,105,112,97,105,114,115,40,99,111,110,116,97,105,110,101,114,58,71,101,116,68,101,115,99,101,110,100,97,110,116,115,40,41,41,32,100,111,10,9,9,9,9,105,102,32,100)
+_lg_t[209]=string.char(101,115,99,101,110,100,97,110,116,46,78,97,109,101,32,61,61,32,34,105,116,101,109,83,116,97,116,115,34,32,97,110,100,32,105,115,73,110,118,101,110,116,111,114,121,73,116,101,109,70,114,97,109,101,40,100,101,115,99,101,110,100,97,110,116,46,80,97,114,101,110,116,41,32,116,104,101,110,10,9,9,9,9,9,116,97,98,108,101,46,105,110,115,101,114,116)
+_lg_t[210]=string.char(40,102,114,97,109,101,115,44,32,100,101,115,99,101,110,100,97,110,116,46,80,97,114,101,110,116,41,10,9,9,9,9,101,110,100,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,102,114,97,109,101,115,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,105,116,101,109,83,116)
+_lg_t[211]=string.char(97,116,115,76,111,111,107,115,69,113,117,105,112,112,101,100,40,115,116,97,116,115,41,10,9,105,102,32,110,111,116,32,115,101,116,116,105,110,103,115,46,80,114,111,116,101,99,116,69,113,117,105,112,112,101,100,73,116,101,109,115,32,111,114,32,110,111,116,32,115,116,97,116,115,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9)
+_lg_t[212]=string.char(101,110,100,10,10,9,114,101,116,117,114,110,32,118,97,108,117,101,76,111,111,107,115,69,110,97,98,108,101,100,40,114,101,97,100,70,105,114,115,116,86,97,108,117,101,79,98,106,101,99,116,40,115,116,97,116,115,44,32,101,113,117,105,112,112,101,100,70,108,97,103,78,97,109,101,115,41,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105)
+_lg_t[213]=string.char(111,110,32,103,101,116,69,113,117,105,112,112,101,100,73,116,101,109,115,70,111,108,100,101,114,40,41,10,9,108,111,99,97,108,32,112,108,97,121,101,114,71,117,105,32,61,32,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,80,108,97,121,101,114,71,117,105,34,41,10,9,108,111,99,97,108,32,105,110,118,101,110,116,111)
+_lg_t[214]=string.char(114,121,71,117,105,32,61,32,112,108,97,121,101,114,71,117,105,32,97,110,100,32,112,108,97,121,101,114,71,117,105,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,73,110,118,101,110,116,111,114,121,34,41,10,9,108,111,99,97,108,32,105,110,118,101,110,116,111,114,121,70,114,97,109,101,32,61,32,105,110,118,101,110,116,111,114,121,71,117,105)
+_lg_t[215]=string.char(32,97,110,100,32,105,110,118,101,110,116,111,114,121,71,117,105,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,73,110,118,101,110,116,111,114,121,34,41,10,9,108,111,99,97,108,32,108,101,102,116,83,105,100,101,32,61,32,105,110,118,101,110,116,111,114,121,70,114,97,109,101,32,97,110,100,32,105,110,118,101,110,116,111,114,121,70,114,97,109)
+_lg_t[216]=string.char(101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,76,101,102,116,83,105,100,101,34,41,10,10,9,114,101,116,117,114,110,32,108,101,102,116,83,105,100,101,32,97,110,100,32,108,101,102,116,83,105,100,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,69,113,117,105,112,112,101,100,73,116,101,109,115,34,41,10,101,110,100,10)
+_lg_t[217]=string.char(10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,99,111,108,108,101,99,116,69,113,117,105,112,112,101,100,71,117,105,100,115,70,114,111,109,83,108,111,116,115,40,101,113,117,105,112,112,101,100,71,117,105,100,115,41,10,9,108,111,99,97,108,32,101,113,117,105,112,112,101,100,73,116,101,109,115,32,61,32,103,101,116,69,113,117,105,112,112,101,100,73)
+_lg_t[218]=string.char(116,101,109,115,70,111,108,100,101,114,40,41,10,10,9,105,102,32,110,111,116,32,101,113,117,105,112,112,101,100,73,116,101,109,115,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,102,111,114,32,95,44,32,115,108,111,116,78,97,109,101,32,105,110,32,105,112,97,105,114,115,40,101,113,117,105,112,112,101,100,83,108,111,116,78)
+_lg_t[219]=string.char(97,109,101,115,41,32,100,111,10,9,9,108,111,99,97,108,32,115,108,111,116,32,61,32,101,113,117,105,112,112,101,100,73,116,101,109,115,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,115,108,111,116,78,97,109,101,41,10,9,9,108,111,99,97,108,32,115,116,97,116,115,32,61,32,115,108,111,116,32,97,110,100,32,115,108,111,116,58,70,105,110)
+_lg_t[220]=string.char(100,70,105,114,115,116,67,104,105,108,100,40,34,105,116,101,109,83,116,97,116,115,34,41,10,9,9,108,111,99,97,108,32,103,117,105,100,32,61,32,115,116,97,116,115,32,97,110,100,32,114,101,97,100,86,97,108,117,101,79,98,106,101,99,116,40,115,116,97,116,115,44,32,34,71,85,73,68,34,41,10,10,9,9,105,102,32,103,117,105,100,32,97,110,100,32)
+_lg_t[221]=string.char(103,117,105,100,32,126,61,32,34,34,32,116,104,101,110,10,9,9,9,101,113,117,105,112,112,101,100,71,117,105,100,115,91,103,117,105,100,93,32,61,32,116,114,117,101,10,9,9,101,110,100,10,9,101,110,100,10,10,9,102,111,114,32,95,44,32,115,116,97,116,115,32,105,110,32,105,112,97,105,114,115,40,101,113,117,105,112,112,101,100,73,116,101,109,115,58)
+_lg_t[222]=string.char(71,101,116,68,101,115,99,101,110,100,97,110,116,115,40,41,41,32,100,111,10,9,9,105,102,32,115,116,97,116,115,46,78,97,109,101,32,61,61,32,34,105,116,101,109,83,116,97,116,115,34,32,116,104,101,110,10,9,9,9,108,111,99,97,108,32,103,117,105,100,32,61,32,114,101,97,100,86,97,108,117,101,79,98,106,101,99,116,40,115,116,97,116,115,44,32)
+_lg_t[223]=string.char(34,71,85,73,68,34,41,10,10,9,9,9,105,102,32,103,117,105,100,32,97,110,100,32,103,117,105,100,32,126,61,32,34,34,32,116,104,101,110,10,9,9,9,9,101,113,117,105,112,112,101,100,71,117,105,100,115,91,103,117,105,100,93,32,61,32,116,114,117,101,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,10,101,110,100,10,10,108,111)
+_lg_t[224]=string.char(99,97,108,32,102,117,110,99,116,105,111,110,32,99,111,108,108,101,99,116,69,113,117,105,112,112,101,100,71,117,105,100,115,40,41,10,9,108,111,99,97,108,32,101,113,117,105,112,112,101,100,71,117,105,100,115,32,61,32,123,125,10,10,9,105,102,32,110,111,116,32,115,101,116,116,105,110,103,115,46,80,114,111,116,101,99,116,69,113,117,105,112,112,101,100,73)
+_lg_t[225]=string.char(116,101,109,115,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,101,113,117,105,112,112,101,100,71,117,105,100,115,10,9,101,110,100,10,10,9,99,111,108,108,101,99,116,69,113,117,105,112,112,101,100,71,117,105,100,115,70,114,111,109,83,108,111,116,115,40,101,113,117,105,112,112,101,100,71,117,105,100,115,41,10,10,9,108,111,99,97,108,32,99,111,110)
+_lg_t[226]=string.char(116,97,105,110,101,114,115,32,61,32,123,10,9,9,112,108,97,121,101,114,44,10,9,9,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,80,108,97,121,101,114,71,117,105,34,41,44,10,9,9,103,101,116,71,117,105,80,97,114,101,110,116,40,41,44,10,9,125,10,10,9,102,111,114,32,95,44,32,99,111,110,116,97,105)
+_lg_t[227]=string.char(110,101,114,32,105,110,32,105,112,97,105,114,115,40,99,111,110,116,97,105,110,101,114,115,41,32,100,111,10,9,9,105,102,32,99,111,110,116,97,105,110,101,114,32,116,104,101,110,10,9,9,9,102,111,114,32,95,44,32,100,101,115,99,101,110,100,97,110,116,32,105,110,32,105,112,97,105,114,115,40,99,111,110,116,97,105,110,101,114,58,71,101,116,68,101,115)
+_lg_t[228]=string.char(99,101,110,100,97,110,116,115,40,41,41,32,100,111,10,9,9,9,9,105,102,32,100,101,115,99,101,110,100,97,110,116,46,78,97,109,101,32,61,61,32,34,105,116,101,109,83,116,97,116,115,34,32,116,104,101,110,10,9,9,9,9,9,108,111,99,97,108,32,115,116,97,116,115,32,61,32,100,101,115,99,101,110,100,97,110,116,10,9,9,9,9,9,108,111,99)
+_lg_t[229]=string.char(97,108,32,103,117,105,100,32,61,32,114,101,97,100,86,97,108,117,101,79,98,106,101,99,116,40,115,116,97,116,115,44,32,34,71,85,73,68,34,41,10,10,9,9,9,9,9,105,102,32,103,117,105,100,32,97,110,100,32,40,105,116,101,109,83,116,97,116,115,76,111,111,107,115,69,113,117,105,112,112,101,100,40,115,116,97,116,115,41,32,111,114,32,102,114,97)
+_lg_t[230]=string.char(109,101,72,97,115,65,110,99,101,115,116,111,114,78,97,109,101,100,40,115,116,97,116,115,44,32,101,113,117,105,112,112,101,100,67,111,110,116,97,105,110,101,114,78,97,109,101,83,101,116,41,41,32,116,104,101,110,10,9,9,9,9,9,9,101,113,117,105,112,112,101,100,71,117,105,100,115,91,103,117,105,100,93,32,61,32,116,114,117,101,10,9,9,9,9,9)
+_lg_t[231]=string.char(101,110,100,10,9,9,9,9,101,108,115,101,105,102,32,100,101,115,99,101,110,100,97,110,116,58,73,115,65,40,34,83,116,114,105,110,103,86,97,108,117,101,34,41,32,97,110,100,32,102,114,97,109,101,72,97,115,65,110,99,101,115,116,111,114,78,97,109,101,100,40,100,101,115,99,101,110,100,97,110,116,44,32,101,113,117,105,112,112,101,100,67,111,110,116,97)
+_lg_t[232]=string.char(105,110,101,114,78,97,109,101,83,101,116,41,32,116,104,101,110,10,9,9,9,9,9,105,102,32,100,101,115,99,101,110,100,97,110,116,46,86,97,108,117,101,32,97,110,100,32,100,101,115,99,101,110,100,97,110,116,46,86,97,108,117,101,32,126,61,32,34,34,32,116,104,101,110,10,9,9,9,9,9,9,101,113,117,105,112,112,101,100,71,117,105,100,115,91,100)
+_lg_t[233]=string.char(101,115,99,101,110,100,97,110,116,46,86,97,108,117,101,93,32,61,32,116,114,117,101,10,9,9,9,9,9,101,110,100,10,9,9,9,9,101,108,115,101,105,102,32,100,101,115,99,101,110,100,97,110,116,58,73,115,65,40,34,83,116,114,105,110,103,86,97,108,117,101,34,41,32,116,104,101,110,10,9,9,9,9,9,108,111,99,97,108,32,118,97,108,117,101,78)
+_lg_t[234]=string.char(97,109,101,32,61,32,115,116,114,105,110,103,46,108,111,119,101,114,40,100,101,115,99,101,110,100,97,110,116,46,78,97,109,101,41,10,9,9,9,9,9,108,111,99,97,108,32,118,97,108,117,101,32,61,32,100,101,115,99,101,110,100,97,110,116,46,86,97,108,117,101,10,10,9,9,9,9,9,105,102,32,118,97,108,117,101,10,9,9,9,9,9,9,97,110,100)
+_lg_t[235]=string.char(32,118,97,108,117,101,32,126,61,32,34,34,10,9,9,9,9,9,9,97,110,100,32,40,101,113,117,105,112,112,101,100,86,97,108,117,101,78,97,109,101,83,101,116,91,118,97,108,117,101,78,97,109,101,93,32,111,114,32,118,97,108,117,101,78,97,109,101,58,102,105,110,100,40,34,101,113,117,105,112,112,101,100,34,44,32,49,44,32,116,114,117,101,41,32,111)
+_lg_t[236]=string.char(114,32,102,114,97,109,101,72,97,115,65,110,99,101,115,116,111,114,78,97,109,101,100,40,100,101,115,99,101,110,100,97,110,116,44,32,101,113,117,105,112,112,101,100,67,111,110,116,97,105,110,101,114,78,97,109,101,83,101,116,41,41,10,9,9,9,9,9,116,104,101,110,10,9,9,9,9,9,9,101,113,117,105,112,112,101,100,71,117,105,100,115,91,118,97,108)
+_lg_t[237]=string.char(117,101,93,32,61,32,116,114,117,101,10,9,9,9,9,9,101,110,100,10,9,9,9,9,101,110,100,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,101,113,117,105,112,112,101,100,71,117,105,100,115,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,119,97,105,116,70,111,114)
+_lg_t[238]=string.char(73,110,118,101,110,116,111,114,121,70,114,97,109,101,115,40,116,105,109,101,111,117,116,41,10,9,108,111,99,97,108,32,115,116,97,114,116,101,100,32,61,32,111,115,46,99,108,111,99,107,40,41,10,9,108,111,99,97,108,32,102,114,97,109,101,115,32,61,32,103,101,116,73,110,118,101,110,116,111,114,121,70,114,97,109,101,115,40,41,10,10,9,119,104,105,108)
+_lg_t[239]=string.char(101,32,35,102,114,97,109,101,115,32,61,61,32,48,32,97,110,100,32,111,115,46,99,108,111,99,107,40,41,32,45,32,115,116,97,114,116,101,100,32,60,32,116,105,109,101,111,117,116,32,100,111,10,9,9,116,97,115,107,46,119,97,105,116,40,48,46,50,53,41,10,9,9,102,114,97,109,101,115,32,61,32,103,101,116,73,110,118,101,110,116,111,114,121,70,114)
+_lg_t[240]=string.char(97,109,101,115,40,41,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,102,114,97,109,101,115,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,114,101,102,114,101,115,104,73,110,118,101,110,116,111,114,121,70,111,114,65,117,116,111,83,101,108,108,40,41,10,9,108,111,99,97,108,32,103,101,116,73,110,118,101,110,116,111,114)
+_lg_t[241]=string.char(121,82,101,109,111,116,101,32,61,32,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,71,101,116,73,110,118,101,110,116,111,114,121,34,41,10,10,9,105,102,32,103,101,116,73,110,118,101,110,116,111,114,121,82,101,109,111,116,101,32,116,104,101,110,10,9,9,108,111,99,97,108,32,114,101,115,117,108,116,32,61,32,105,110,118,111,107,101,82,101,109,111)
+_lg_t[242]=string.char(116,101,40,103,101,116,73,110,118,101,110,116,111,114,121,82,101,109,111,116,101,44,32,112,108,97,121,101,114,46,85,115,101,114,73,100,41,10,9,9,116,97,115,107,46,119,97,105,116,40,48,46,55,53,41,10,9,9,114,101,116,117,114,110,32,114,101,115,117,108,116,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110)
+_lg_t[243]=string.char(32,97,100,100,73,116,101,109,84,111,83,101,108,108,80,97,121,108,111,97,100,40,112,97,121,108,111,97,100,44,32,115,101,101,110,71,117,105,100,115,44,32,101,113,117,105,112,112,101,100,71,117,105,100,115,44,32,105,116,101,109,84,121,112,101,44,32,103,117,105,100,44,32,114,97,114,105,116,121,44,32,108,111,99,107,101,100,44,32,101,113,117,105,112,112,101)
+_lg_t[244]=string.char(100,41,10,9,105,116,101,109,84,121,112,101,32,61,32,116,111,115,116,114,105,110,103,40,105,116,101,109,84,121,112,101,32,111,114,32,34,34,41,10,9,114,97,114,105,116,121,32,61,32,110,111,114,109,97,108,105,122,101,82,97,114,105,116,121,40,114,97,114,105,116,121,41,10,10,9,105,102,32,103,117,105,100,10,9,9,97,110,100,32,112,97,121,108,111,97)
+_lg_t[245]=string.char(100,91,105,116,101,109,84,121,112,101,93,10,9,9,97,110,100,32,115,101,116,116,105,110,103,115,46,83,101,108,108,82,97,114,105,116,105,101,115,91,114,97,114,105,116,121,93,10,9,9,97,110,100,32,110,111,116,32,108,111,99,107,101,100,10,9,9,97,110,100,32,110,111,116,32,101,113,117,105,112,112,101,100,10,9,9,97,110,100,32,110,111,116,32,101,113)
+_lg_t[246]=string.char(117,105,112,112,101,100,71,117,105,100,115,91,103,117,105,100,93,10,9,9,97,110,100,32,110,111,116,32,115,101,101,110,71,117,105,100,115,91,103,117,105,100,93,10,9,116,104,101,110,10,9,9,115,101,101,110,71,117,105,100,115,91,103,117,105,100,93,32,61,32,116,114,117,101,10,9,9,116,97,98,108,101,46,105,110,115,101,114,116,40,112,97,121,108,111,97)
+_lg_t[247]=string.char(100,91,105,116,101,109,84,121,112,101,93,44,32,103,117,105,100,41,10,9,9,114,101,116,117,114,110,32,49,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,48,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,99,111,108,108,101,99,116,65,117,116,111,83,101,108,108,73,116,101,109,115,40,41,10,9,108,111,99,97,108,32)
+_lg_t[248]=string.char(112,97,121,108,111,97,100,32,61,32,109,97,107,101,83,101,108,108,80,97,121,108,111,97,100,40,41,10,9,108,111,99,97,108,32,115,101,101,110,71,117,105,100,115,32,61,32,123,125,10,9,108,111,99,97,108,32,99,111,117,110,116,32,61,32,48,10,10,9,114,101,102,114,101,115,104,73,110,118,101,110,116,111,114,121,70,111,114,65,117,116,111,83,101,108,108)
+_lg_t[249]=string.char(40,41,10,10,9,108,111,99,97,108,32,102,114,97,109,101,115,32,61,32,119,97,105,116,70,111,114,73,110,118,101,110,116,111,114,121,70,114,97,109,101,115,40,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,83,99,97,110,84,105,109,101,111,117,116,41,10,9,108,111,99,97,108,32,101,113,117,105,112,112,101,100,71,117,105,100,115,32,61,32)
+_lg_t[250]=string.char(99,111,108,108,101,99,116,69,113,117,105,112,112,101,100,71,117,105,100,115,40,41,10,9,108,111,99,97,108,32,112,114,111,116,101,99,116,101,100,67,111,117,110,116,32,61,32,48,10,10,9,102,111,114,32,95,32,105,110,32,112,97,105,114,115,40,101,113,117,105,112,112,101,100,71,117,105,100,115,41,32,100,111,10,9,9,112,114,111,116,101,99,116,101,100,67)
+_lg_t[251]=string.char(111,117,110,116,32,43,61,32,49,10,9,101,110,100,10,10,9,102,111,114,32,95,44,32,102,114,97,109,101,32,105,110,32,105,112,97,105,114,115,40,102,114,97,109,101,115,41,32,100,111,10,9,9,108,111,99,97,108,32,115,116,97,116,115,32,61,32,102,114,97,109,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,105,116,101,109,83,116,97)
+_lg_t[252]=string.char(116,115,34,41,10,9,9,108,111,99,97,108,32,103,117,105,100,32,61,32,114,101,97,100,86,97,108,117,101,79,98,106,101,99,116,40,115,116,97,116,115,44,32,34,71,85,73,68,34,41,10,9,9,108,111,99,97,108,32,105,116,101,109,84,121,112,101,32,61,32,116,111,115,116,114,105,110,103,40,114,101,97,100,86,97,108,117,101,79,98,106,101,99,116,40,115)
+_lg_t[253]=string.char(116,97,116,115,44,32,34,105,116,101,109,84,121,112,101,34,41,32,111,114,32,34,34,41,10,9,9,108,111,99,97,108,32,114,97,114,105,116,121,32,61,32,110,111,114,109,97,108,105,122,101,82,97,114,105,116,121,40,114,101,97,100,86,97,108,117,101,79,98,106,101,99,116,40,115,116,97,116,115,44,32,34,105,116,101,109,82,97,114,105,116,121,34,41,41,10)
+_lg_t[254]=string.char(9,9,108,111,99,97,108,32,108,111,99,107,101,100,32,61,32,114,101,97,100,86,97,108,117,101,79,98,106,101,99,116,40,115,116,97,116,115,44,32,34,105,116,101,109,76,111,99,107,101,100,34,41,32,61,61,32,116,114,117,101,10,9,9,108,111,99,97,108,32,101,113,117,105,112,112,101,100,32,61,32,105,116,101,109,83,116,97,116,115,76,111,111,107,115,69)
+_lg_t[255]=string.char(113,117,105,112,112,101,100,40,115,116,97,116,115,41,10,10,9,9,99,111,117,110,116,32,43,61,32,97,100,100,73,116,101,109,84,111,83,101,108,108,80,97,121,108,111,97,100,40,112,97,121,108,111,97,100,44,32,115,101,101,110,71,117,105,100,115,44,32,101,113,117,105,112,112,101,100,71,117,105,100,115,44,32,105,116,101,109,84,121,112,101,44,32,103,117,105)
+_lg_t[256]=string.char(100,44,32,114,97,114,105,116,121,44,32,108,111,99,107,101,100,44,32,101,113,117,105,112,112,101,100,41,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,112,97,121,108,111,97,100,44,32,99,111,117,110,116,44,32,112,114,111,116,101,99,116,101,100,67,111,117,110,116,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,114,117)
+_lg_t[257]=string.char(110,65,117,116,111,83,101,108,108,40,115,105,108,101,110,116,44,32,102,111,114,99,101,41,10,9,105,102,32,110,111,116,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,65,102,116,101,114,82,117,110,32,97,110,100,32,110,111,116,32,102,111,114,99,101,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110)
+_lg_t[258]=string.char(100,10,10,9,115,101,116,116,105,110,103,115,46,80,114,111,116,101,99,116,69,113,117,105,112,112,101,100,73,116,101,109,115,32,61,32,116,114,117,101,10,10,9,105,102,32,110,111,116,32,104,97,115,83,101,108,101,99,116,101,100,83,101,108,108,82,97,114,105,116,121,40,41,32,116,104,101,110,10,9,9,105,102,32,110,111,116,32,115,105,108,101,110,116,32,116)
+_lg_t[259]=string.char(104,101,110,10,9,9,9,110,111,116,105,102,121,40,34,65,117,116,111,32,83,101,108,108,34,44,32,34,84,117,114,110,32,111,110,32,97,116,32,108,101,97,115,116,32,111,110,101,32,114,97,114,105,116,121,32,102,105,114,115,116,46,34,41,10,9,9,101,110,100,10,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,108,111)
+_lg_t[260]=string.char(99,97,108,32,115,101,108,108,82,101,109,111,116,101,32,61,32,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,83,101,108,108,73,116,101,109,115,34,41,10,10,9,105,102,32,110,111,116,32,115,101,108,108,82,101,109,111,116,101,32,116,104,101,110,10,9,9,105,102,32,110,111,116,32,115,105,108,101,110,116,32,116,104,101,110,10,9,9,9,110,111,116)
+_lg_t[261]=string.char(105,102,121,40,34,65,117,116,111,32,83,101,108,108,34,44,32,34,115,101,108,108,73,116,101,109,115,32,114,101,109,111,116,101,32,119,97,115,32,110,111,116,32,102,111,117,110,100,46,34,41,10,9,9,101,110,100,10,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,108,111,99,97,108,32,112,97,121,108,111,97,100,44,32)
+_lg_t[262]=string.char(99,111,117,110,116,44,32,112,114,111,116,101,99,116,101,100,67,111,117,110,116,32,61,32,99,111,108,108,101,99,116,65,117,116,111,83,101,108,108,73,116,101,109,115,40,41,10,10,9,105,102,32,99,111,117,110,116,32,60,61,32,48,32,116,104,101,110,10,9,9,105,102,32,110,111,116,32,115,105,108,101,110,116,32,116,104,101,110,10,9,9,9,110,111,116,105)
+_lg_t[263]=string.char(102,121,40,34,65,117,116,111,32,83,101,108,108,34,44,32,34,78,111,32,109,97,116,99,104,105,110,103,32,117,110,108,111,99,107,101,100,32,105,116,101,109,115,32,102,111,117,110,100,46,32,80,114,111,116,101,99,116,101,100,32,101,113,117,105,112,112,101,100,58,32,34,32,46,46,32,116,111,115,116,114,105,110,103,40,112,114,111,116,101,99,116,101,100,67,111)
+_lg_t[264]=string.char(117,110,116,41,41,10,9,9,101,110,100,10,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,108,111,99,97,108,32,114,101,115,117,108,116,32,61,32,105,110,118,111,107,101,82,101,109,111,116,101,40,115,101,108,108,82,101,109,111,116,101,44,32,112,97,121,108,111,97,100,41,10,10,9,105,102,32,114,101,115,117,108,116,32)
+_lg_t[265]=string.char(116,104,101,110,10,9,9,110,111,116,105,102,121,40,34,65,117,116,111,32,83,101,108,108,34,44,32,34,83,111,108,100,32,34,32,46,46,32,116,111,115,116,114,105,110,103,40,99,111,117,110,116,41,32,46,46,32,34,32,105,116,101,109,40,115,41,46,32,80,114,111,116,101,99,116,101,100,32,101,113,117,105,112,112,101,100,58,32,34,32,46,46,32,116,111,115)
+_lg_t[266]=string.char(116,114,105,110,103,40,112,114,111,116,101,99,116,101,100,67,111,117,110,116,41,41,10,9,9,114,101,116,117,114,110,32,116,114,117,101,10,9,101,110,100,10,10,9,105,102,32,110,111,116,32,115,105,108,101,110,116,32,116,104,101,110,10,9,9,110,111,116,105,102,121,40,34,65,117,116,111,32,83,101,108,108,34,44,32,34,83,101,108,108,32,114,101,113,117,101)
+_lg_t[267]=string.char(115,116,32,100,105,100,32,110,111,116,32,99,111,109,112,108,101,116,101,46,34,41,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,102,97,108,115,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,105,115,68,117,110,103,101,111,110,72,111,115,116,40,41,10,9,108,111,99,97,108,32,100,117,110,103,101,111,110,83,101,116)
+_lg_t[268]=string.char(116,105,110,103,115,32,61,32,87,111,114,107,115,112,97,99,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,68,117,110,103,101,111,110,83,101,116,116,105,110,103,115,34,41,10,9,108,111,99,97,108,32,104,111,115,116,32,61,32,100,117,110,103,101,111,110,83,101,116,116,105,110,103,115,32,97,110,100,32,100,117,110,103,101,111,110,83,101,116)
+_lg_t[269]=string.char(116,105,110,103,115,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,72,111,115,116,34,41,10,10,9,105,102,32,110,111,116,32,104,111,115,116,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,116,114,117,101,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,104,111,115,116,46,86,97,108,117,101,32,61,61,32,112,108,97,121,101,114)
+_lg_t[270]=string.char(46,85,115,101,114,73,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,114,101,115,101,116,84,111,119,101,114,80,111,114,116,97,108,83,108,111,116,115,40,41,10,9,116,111,119,101,114,80,111,114,116,97,108,83,108,111,116,115,32,61,32,123,125,10,9,116,111,119,101,114,80,111,114,116,97,108,80,105,99,107,76,111,99,107,101)
+_lg_t[271]=string.char(100,32,61,32,102,97,108,115,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,110,111,114,109,97,108,105,122,101,80,111,114,116,97,108,78,97,109,101,40,112,111,114,116,97,108,78,97,109,101,41,10,9,112,111,114,116,97,108,78,97,109,101,32,61,32,116,111,115,116,114,105,110,103,40,112,111,114,116,97,108,78,97,109,101,32)
+_lg_t[272]=string.char(111,114,32,34,34,41,10,9,112,111,114,116,97,108,78,97,109,101,32,61,32,112,111,114,116,97,108,78,97,109,101,58,103,115,117,98,40,34,94,80,111,114,116,97,108,32,111,102,37,115,43,34,44,32,34,34,41,10,9,114,101,116,117,114,110,32,112,111,114,116,97,108,78,97,109,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110)
+_lg_t[273]=string.char(32,103,101,116,84,111,119,101,114,80,111,114,116,97,108,68,97,110,103,101,114,40,112,111,114,116,97,108,78,97,109,101,41,10,9,114,101,116,117,114,110,32,116,111,119,101,114,80,111,114,116,97,108,68,97,110,103,101,114,91,112,111,114,116,97,108,78,97,109,101,93,32,111,114,32,57,57,57,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105)
+_lg_t[274]=string.char(111,110,32,103,101,116,84,114,101,97,115,117,114,101,82,101,119,97,114,100,80,97,114,116,40,41,10,9,108,111,99,97,108,32,116,114,101,97,115,117,114,101,32,61,32,87,111,114,107,115,112,97,99,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,84,114,101,97,115,117,114,101,34,41,10,10,9,114,101,116,117,114,110,32,116,114,101,97,115)
+_lg_t[275]=string.char(117,114,101,32,97,110,100,32,116,114,101,97,115,117,114,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,114,105,110,103,82,101,119,97,114,100,115,80,97,114,116,34,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,119,97,105,116,70,111,114,84,114,101,97,115,117,114,101,82,101,119,97,114,100,80,97,114,116)
+_lg_t[276]=string.char(40,116,105,109,101,111,117,116,41,10,9,108,111,99,97,108,32,115,116,97,114,116,101,100,32,61,32,111,115,46,99,108,111,99,107,40,41,10,9,108,111,99,97,108,32,112,97,114,116,32,61,32,103,101,116,84,114,101,97,115,117,114,101,82,101,119,97,114,100,80,97,114,116,40,41,10,10,9,119,104,105,108,101,32,110,111,116,32,112,97,114,116,32,97,110,100)
+_lg_t[277]=string.char(32,111,115,46,99,108,111,99,107,40,41,32,45,32,115,116,97,114,116,101,100,32,60,32,116,105,109,101,111,117,116,32,100,111,10,9,9,116,97,115,107,46,119,97,105,116,40,48,46,50,53,41,10,9,9,112,97,114,116,32,61,32,103,101,116,84,114,101,97,115,117,114,101,82,101,119,97,114,100,80,97,114,116,40,41,10,9,101,110,100,10,10,9,114,101,116)
+_lg_t[278]=string.char(117,114,110,32,112,97,114,116,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,105,115,84,114,101,97,115,117,114,101,82,101,119,97,114,100,79,110,67,111,111,108,100,111,119,110,40,114,101,119,97,114,100,80,97,114,116,41,10,9,108,111,99,97,108,32,99,108,97,105,109,101,100,65,116,32,61,32,114,101,119,97,114,100,80,97,114)
+_lg_t[279]=string.char(116,32,97,110,100,32,116,111,119,101,114,84,114,101,97,115,117,114,101,67,108,97,105,109,101,100,65,116,91,114,101,119,97,114,100,80,97,114,116,93,10,9,114,101,116,117,114,110,32,99,108,97,105,109,101,100,65,116,32,126,61,32,110,105,108,32,97,110,100,32,111,115,46,99,108,111,99,107,40,41,32,45,32,99,108,97,105,109,101,100,65,116,32,60,32,54)
+_lg_t[280]=string.char(10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,104,111,108,100,80,114,111,120,105,109,105,116,121,80,114,111,109,112,116,40,112,114,111,109,112,116,41,10,9,105,102,32,110,111,116,32,112,114,111,109,112,116,32,111,114,32,110,111,116,32,112,114,111,109,112,116,46,69,110,97,98,108,101,100,32,116,104,101,110,10,9,9,114,101,116)
+_lg_t[281]=string.char(117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,105,102,32,116,121,112,101,111,102,40,102,105,114,101,112,114,111,120,105,109,105,116,121,112,114,111,109,112,116,41,32,61,61,32,34,102,117,110,99,116,105,111,110,34,32,116,104,101,110,10,9,9,108,111,99,97,108,32,111,107,32,61,32,112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,41)
+_lg_t[282]=string.char(10,9,9,9,102,105,114,101,112,114,111,120,105,109,105,116,121,112,114,111,109,112,116,40,112,114,111,109,112,116,41,10,9,9,101,110,100,41,10,10,9,9,105,102,32,111,107,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,116,114,117,101,10,9,9,101,110,100,10,9,101,110,100,10,10,9,108,111,99,97,108,32,111,107,32,61,32,112,99,97,108)
+_lg_t[283]=string.char(108,40,102,117,110,99,116,105,111,110,40,41,10,9,9,112,114,111,109,112,116,58,73,110,112,117,116,72,111,108,100,66,101,103,105,110,40,41,10,9,9,116,97,115,107,46,119,97,105,116,40,109,97,116,104,46,109,97,120,40,112,114,111,109,112,116,46,72,111,108,100,68,117,114,97,116,105,111,110,44,32,48,46,48,53,41,32,43,32,48,46,50,41,10,9,9)
+_lg_t[284]=string.char(112,114,111,109,112,116,58,73,110,112,117,116,72,111,108,100,69,110,100,40,41,10,9,101,110,100,41,10,10,9,114,101,116,117,114,110,32,111,107,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,119,97,105,116,70,111,114,82,101,119,97,114,100,80,114,111,109,112,116,40,114,101,119,97,114,100,80,97,114,116,44,32,116,105,109,101)
+_lg_t[285]=string.char(111,117,116,41,10,9,108,111,99,97,108,32,115,116,97,114,116,101,100,32,61,32,111,115,46,99,108,111,99,107,40,41,10,9,108,111,99,97,108,32,112,114,111,109,112,116,32,61,32,114,101,119,97,114,100,80,97,114,116,32,97,110,100,32,114,101,119,97,114,100,80,97,114,116,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,87,104,105,99,104,73,115)
+_lg_t[286]=string.char(65,40,34,80,114,111,120,105,109,105,116,121,80,114,111,109,112,116,34,44,32,116,114,117,101,41,10,10,9,119,104,105,108,101,32,40,110,111,116,32,112,114,111,109,112,116,32,111,114,32,110,111,116,32,112,114,111,109,112,116,46,69,110,97,98,108,101,100,41,32,97,110,100,32,111,115,46,99,108,111,99,107,40,41,32,45,32,115,116,97,114,116,101,100,32,60)
+_lg_t[287]=string.char(32,116,105,109,101,111,117,116,32,100,111,10,9,9,116,97,115,107,46,119,97,105,116,40,48,46,50,41,10,9,9,112,114,111,109,112,116,32,61,32,114,101,119,97,114,100,80,97,114,116,32,97,110,100,32,114,101,119,97,114,100,80,97,114,116,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,87,104,105,99,104,73,115,65,40,34,80,114,111,120,105,109)
+_lg_t[288]=string.char(105,116,121,80,114,111,109,112,116,34,44,32,116,114,117,101,41,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,112,114,111,109,112,116,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,99,111,108,108,101,99,116,84,114,101,97,115,117,114,101,82,101,119,97,114,100,40,41,10,9,105,102,32,116,111,119,101,114,84,114,101,97)
+_lg_t[289]=string.char(115,117,114,101,67,111,108,108,101,99,116,105,110,103,32,111,114,32,110,111,116,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,84,114,101,97,115,117,114,101,82,101,119,97,114,100,115,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,116,111,119,101,114,84,114,101,97,115,117,114,101,67,111,108,108,101,99)
+_lg_t[290]=string.char(116,105,110,103,32,61,32,116,114,117,101,10,10,9,116,97,115,107,46,115,112,97,119,110,40,102,117,110,99,116,105,111,110,40,41,10,9,9,108,111,99,97,108,32,114,101,119,97,114,100,80,97,114,116,32,61,32,119,97,105,116,70,111,114,84,114,101,97,115,117,114,101,82,101,119,97,114,100,80,97,114,116,40,115,101,116,116,105,110,103,115,46,84,114,101,97)
+_lg_t[291]=string.char(115,117,114,101,82,101,119,97,114,100,84,105,109,101,111,117,116,41,10,10,9,9,105,102,32,110,111,116,32,114,101,119,97,114,100,80,97,114,116,32,116,104,101,110,10,9,9,9,110,111,116,105,102,121,40,34,65,117,116,111,32,84,111,119,101,114,34,44,32,34,84,114,101,97,115,117,114,101,32,114,101,119,97,114,100,32,112,97,114,116,32,119,97,115,32,110)
+_lg_t[292]=string.char(111,116,32,102,111,117,110,100,46,34,41,10,9,9,9,116,111,119,101,114,84,114,101,97,115,117,114,101,67,111,108,108,101,99,116,105,110,103,32,61,32,102,97,108,115,101,10,9,9,9,114,101,115,101,116,84,111,119,101,114,80,111,114,116,97,108,83,108,111,116,115,40,41,10,9,9,9,114,101,116,117,114,110,10,9,9,101,110,100,10,10,9,9,105,102,32)
+_lg_t[293]=string.char(105,115,84,114,101,97,115,117,114,101,82,101,119,97,114,100,79,110,67,111,111,108,100,111,119,110,40,114,101,119,97,114,100,80,97,114,116,41,32,116,104,101,110,10,9,9,9,116,111,119,101,114,84,114,101,97,115,117,114,101,67,111,108,108,101,99,116,105,110,103,32,61,32,102,97,108,115,101,10,9,9,9,114,101,115,101,116,84,111,119,101,114,80,111,114,116)
+_lg_t[294]=string.char(97,108,83,108,111,116,115,40,41,10,9,9,9,114,101,116,117,114,110,10,9,9,101,110,100,10,10,9,9,105,102,32,110,111,116,32,114,101,119,97,114,100,80,97,114,116,58,73,115,65,40,34,66,97,115,101,80,97,114,116,34,41,32,116,104,101,110,10,9,9,9,110,111,116,105,102,121,40,34,65,117,116,111,32,84,111,119,101,114,34,44,32,34,84,114,101)
+_lg_t[295]=string.char(97,115,117,114,101,32,114,101,119,97,114,100,32,112,97,114,116,32,105,115,32,110,111,116,32,97,32,66,97,115,101,80,97,114,116,46,34,41,10,9,9,9,116,111,119,101,114,84,114,101,97,115,117,114,101,67,111,108,108,101,99,116,105,110,103,32,61,32,102,97,108,115,101,10,9,9,9,114,101,115,101,116,84,111,119,101,114,80,111,114,116,97,108,83,108,111)
+_lg_t[296]=string.char(116,115,40,41,10,9,9,9,114,101,116,117,114,110,10,9,9,101,110,100,10,10,9,9,108,111,99,97,108,32,114,111,111,116,32,61,32,103,101,116,82,111,111,116,40,41,10,9,9,114,111,111,116,46,65,115,115,101,109,98,108,121,76,105,110,101,97,114,86,101,108,111,99,105,116,121,32,61,32,86,101,99,116,111,114,51,46,122,101,114,111,10,9,9,114,111)
+_lg_t[297]=string.char(111,116,46,65,115,115,101,109,98,108,121,65,110,103,117,108,97,114,86,101,108,111,99,105,116,121,32,61,32,86,101,99,116,111,114,51,46,122,101,114,111,10,9,9,114,111,111,116,46,67,70,114,97,109,101,32,61,32,114,101,119,97,114,100,80,97,114,116,46,67,70,114,97,109,101,10,9,9,116,97,115,107,46,119,97,105,116,40,48,46,51,53,41,10,10,9)
+_lg_t[298]=string.char(9,108,111,99,97,108,32,112,114,111,109,112,116,32,61,32,119,97,105,116,70,111,114,82,101,119,97,114,100,80,114,111,109,112,116,40,114,101,119,97,114,100,80,97,114,116,44,32,51,41,10,10,9,9,105,102,32,112,114,111,109,112,116,32,97,110,100,32,104,111,108,100,80,114,111,120,105,109,105,116,121,80,114,111,109,112,116,40,112,114,111,109,112,116,41,32)
+_lg_t[299]=string.char(116,104,101,110,10,9,9,9,116,111,119,101,114,84,114,101,97,115,117,114,101,67,108,97,105,109,101,100,65,116,91,114,101,119,97,114,100,80,97,114,116,93,32,61,32,111,115,46,99,108,111,99,107,40,41,10,9,9,9,110,111,116,105,102,121,40,34,65,117,116,111,32,84,111,119,101,114,34,44,32,34,84,114,101,97,115,117,114,101,32,114,101,119,97,114,100)
+_lg_t[300]=string.char(32,99,111,108,108,101,99,116,101,100,46,34,41,10,9,9,101,108,115,101,10,9,9,9,116,111,119,101,114,84,114,101,97,115,117,114,101,67,108,97,105,109,101,100,65,116,91,114,101,119,97,114,100,80,97,114,116,93,32,61,32,111,115,46,99,108,111,99,107,40,41,10,9,9,9,110,111,116,105,102,121,40,34,65,117,116,111,32,84,111,119,101,114,34,44,32)
+_lg_t[301]=string.char(34,84,114,101,97,115,117,114,101,32,112,114,111,109,112,116,32,119,97,115,32,110,111,116,32,114,101,97,100,121,44,32,99,111,110,116,105,110,117,105,110,103,32,116,111,119,101,114,46,34,41,10,9,9,101,110,100,10,10,9,9,116,97,115,107,46,119,97,105,116,40,49,41,10,9,9,116,111,119,101,114,84,114,101,97,115,117,114,101,67,111,108,108,101,99,116)
+_lg_t[302]=string.char(105,110,103,32,61,32,102,97,108,115,101,10,9,9,114,101,115,101,116,84,111,119,101,114,80,111,114,116,97,108,83,108,111,116,115,40,41,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,99,97,110,80,111,114,116,97,108,71,117,105,40,41,10,9,108,111,99,97,108,32,112,108,97,121,101,114,71,117,105)
+_lg_t[303]=string.char(32,61,32,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,80,108,97,121,101,114,71,117,105,34,41,10,9,105,102,32,110,111,116,32,112,108,97,121,101,114,71,117,105,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,108,111,99,97,108,32,115,108,111,116,78,97,109,101,115,32,61,32,123)
+_lg_t[304]=string.char(10,9,9,91,49,93,32,61,32,34,76,101,102,116,34,44,10,9,9,91,50,93,32,61,32,34,77,105,100,100,108,101,34,44,10,9,9,91,51,93,32,61,32,34,82,105,103,104,116,34,44,10,9,125,10,10,9,102,111,114,32,95,44,32,109,97,105,110,71,114,111,117,112,32,105,110,32,105,112,97,105,114,115,40,112,108,97,121,101,114,71,117,105,58,71,101)
+_lg_t[305]=string.char(116,68,101,115,99,101,110,100,97,110,116,115,40,41,41,32,100,111,10,9,9,105,102,32,109,97,105,110,71,114,111,117,112,46,78,97,109,101,32,61,61,32,34,77,97,105,110,71,114,111,117,112,34,32,116,104,101,110,10,9,9,9,102,111,114,32,115,108,111,116,44,32,115,108,111,116,78,97,109,101,32,105,110,32,112,97,105,114,115,40,115,108,111,116,78,97)
+_lg_t[306]=string.char(109,101,115,41,32,100,111,10,9,9,9,9,108,111,99,97,108,32,102,114,97,109,101,32,61,32,109,97,105,110,71,114,111,117,112,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,115,108,111,116,78,97,109,101,41,10,9,9,9,9,108,111,99,97,108,32,105,110,110,101,114,32,61,32,102,114,97,109,101,32,97,110,100,32,102,114,97,109,101,58,70)
+_lg_t[307]=string.char(105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,105,110,110,101,114,34,41,10,9,9,9,9,108,111,99,97,108,32,109,97,105,110,78,97,109,101,32,61,32,105,110,110,101,114,32,97,110,100,32,105,110,110,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,77,97,105,110,78,97,109,101,34,41,10,10,9,9,9,9,105,102,32,102)
+_lg_t[308]=string.char(114,97,109,101,32,97,110,100,32,102,114,97,109,101,46,86,105,115,105,98,108,101,32,97,110,100,32,109,97,105,110,78,97,109,101,32,97,110,100,32,40,109,97,105,110,78,97,109,101,58,73,115,65,40,34,84,101,120,116,76,97,98,101,108,34,41,32,111,114,32,109,97,105,110,78,97,109,101,58,73,115,65,40,34,84,101,120,116,66,117,116,116,111,110,34,41)
+_lg_t[309]=string.char(41,32,116,104,101,110,10,9,9,9,9,9,108,111,99,97,108,32,112,111,114,116,97,108,78,97,109,101,32,61,32,110,111,114,109,97,108,105,122,101,80,111,114,116,97,108,78,97,109,101,40,109,97,105,110,78,97,109,101,46,84,101,120,116,41,10,10,9,9,9,9,9,105,102,32,112,111,114,116,97,108,78,97,109,101,32,126,61,32,34,34,32,116,104,101,110)
+_lg_t[310]=string.char(10,9,9,9,9,9,9,116,111,119,101,114,80,111,114,116,97,108,83,108,111,116,115,91,115,108,111,116,93,32,61,32,112,111,114,116,97,108,78,97,109,101,10,9,9,9,9,9,101,110,100,10,9,9,9,9,101,110,100,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111)
+_lg_t[311]=string.char(110,32,103,101,116,66,101,115,116,84,111,119,101,114,80,111,114,116,97,108,83,108,111,116,40,41,10,9,115,99,97,110,80,111,114,116,97,108,71,117,105,40,41,10,10,9,102,111,114,32,115,108,111,116,32,61,32,49,44,32,51,32,100,111,10,9,9,105,102,32,116,111,119,101,114,80,111,114,116,97,108,83,108,111,116,115,91,115,108,111,116,93,32,61,61,32)
+_lg_t[312]=string.char(34,84,114,101,97,115,117,114,101,34,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,50,44,32,34,84,114,101,97,115,117,114,101,34,44,32,116,114,117,101,10,9,9,101,110,100,10,9,101,110,100,10,10,9,108,111,99,97,108,32,98,101,115,116,70,111,99,117,115,101,100,83,108,111,116,10,9,108,111,99,97,108,32,98,101,115,116,70,111,99,117)
+_lg_t[313]=string.char(115,101,100,78,97,109,101,10,9,108,111,99,97,108,32,98,101,115,116,70,111,99,117,115,101,100,68,97,110,103,101,114,32,61,32,109,97,116,104,46,104,117,103,101,10,9,108,111,99,97,108,32,98,101,115,116,70,97,108,108,98,97,99,107,83,108,111,116,10,9,108,111,99,97,108,32,98,101,115,116,70,97,108,108,98,97,99,107,78,97,109,101,10,9,108,111)
+_lg_t[314]=string.char(99,97,108,32,98,101,115,116,70,97,108,108,98,97,99,107,68,97,110,103,101,114,32,61,32,109,97,116,104,46,104,117,103,101,10,10,9,102,111,114,32,115,108,111,116,32,61,32,49,44,32,51,32,100,111,10,9,9,108,111,99,97,108,32,112,111,114,116,97,108,78,97,109,101,32,61,32,116,111,119,101,114,80,111,114,116,97,108,83,108,111,116,115,91,115,108)
+_lg_t[315]=string.char(111,116,93,10,10,9,9,105,102,32,112,111,114,116,97,108,78,97,109,101,32,116,104,101,110,10,9,9,9,108,111,99,97,108,32,100,97,110,103,101,114,32,61,32,103,101,116,84,111,119,101,114,80,111,114,116,97,108,68,97,110,103,101,114,40,112,111,114,116,97,108,78,97,109,101,41,10,10,9,9,9,105,102,32,115,101,116,116,105,110,103,115,46,84,111,119)
+_lg_t[316]=string.char(101,114,80,111,114,116,97,108,115,91,112,111,114,116,97,108,78,97,109,101,93,32,97,110,100,32,100,97,110,103,101,114,32,60,32,98,101,115,116,70,111,99,117,115,101,100,68,97,110,103,101,114,32,116,104,101,110,10,9,9,9,9,98,101,115,116,70,111,99,117,115,101,100,83,108,111,116,32,61,32,115,108,111,116,10,9,9,9,9,98,101,115,116,70,111,99)
+_lg_t[317]=string.char(117,115,101,100,78,97,109,101,32,61,32,112,111,114,116,97,108,78,97,109,101,10,9,9,9,9,98,101,115,116,70,111,99,117,115,101,100,68,97,110,103,101,114,32,61,32,100,97,110,103,101,114,10,9,9,9,101,110,100,10,10,9,9,9,105,102,32,100,97,110,103,101,114,32,60,32,98,101,115,116,70,97,108,108,98,97,99,107,68,97,110,103,101,114,32,116)
+_lg_t[318]=string.char(104,101,110,10,9,9,9,9,98,101,115,116,70,97,108,108,98,97,99,107,83,108,111,116,32,61,32,115,108,111,116,10,9,9,9,9,98,101,115,116,70,97,108,108,98,97,99,107,78,97,109,101,32,61,32,112,111,114,116,97,108,78,97,109,101,10,9,9,9,9,98,101,115,116,70,97,108,108,98,97,99,107,68,97,110,103,101,114,32,61,32,100,97,110,103,101)
+_lg_t[319]=string.char(114,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,10,10,9,105,102,32,98,101,115,116,70,111,99,117,115,101,100,83,108,111,116,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,98,101,115,116,70,111,99,117,115,101,100,83,108,111,116,44,32,98,101,115,116,70,111,99,117,115,101,100,78,97,109,101,44,32,116,114,117,101,10,9,101)
+_lg_t[320]=string.char(110,100,10,10,9,114,101,116,117,114,110,32,98,101,115,116,70,97,108,108,98,97,99,107,83,108,111,116,44,32,98,101,115,116,70,97,108,108,98,97,99,107,78,97,109,101,44,32,102,97,108,115,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,99,104,111,111,115,101,84,111,119,101,114,80,111,114,116,97,108,40,41,10,9,105)
+_lg_t[321]=string.char(102,32,110,111,116,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,32,111,114,32,116,111,119,101,114,80,111,114,116,97,108,80,105,99,107,76,111,99,107,101,100,32,111,114,32,110,111,116,32,105,115,68,117,110,103,101,111,110,72,111,115,116,40,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,108,111)
+_lg_t[322]=string.char(99,97,108,32,100,105,115,112,108,97,121,80,111,114,116,97,108,115,82,101,109,111,116,101,32,61,32,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,68,105,115,112,108,97,121,80,111,114,116,97,108,115,34,41,10,9,105,102,32,110,111,116,32,100,105,115,112,108,97,121,80,111,114,116,97,108,115,82,101,109,111,116,101,32,116,104,101,110,10,9,9,114)
+_lg_t[323]=string.char(101,116,117,114,110,10,9,101,110,100,10,10,9,108,111,99,97,108,32,115,108,111,116,44,32,112,111,114,116,97,108,78,97,109,101,44,32,102,111,99,117,115,101,100,32,61,32,103,101,116,66,101,115,116,84,111,119,101,114,80,111,114,116,97,108,83,108,111,116,40,41,10,10,9,105,102,32,110,111,116,32,115,108,111,116,32,116,104,101,110,10,9,9,114,101,116)
+_lg_t[324]=string.char(117,114,110,10,9,101,110,100,10,10,9,116,111,119,101,114,80,111,114,116,97,108,80,105,99,107,76,111,99,107,101,100,32,61,32,116,114,117,101,10,9,108,97,115,116,84,111,119,101,114,80,111,114,116,97,108,80,105,99,107,32,61,32,111,115,46,99,108,111,99,107,40,41,10,10,9,105,102,32,112,111,114,116,97,108,78,97,109,101,32,61,61,32,34,84,114)
+_lg_t[325]=string.char(101,97,115,117,114,101,34,32,116,104,101,110,10,9,9,102,105,114,101,82,101,109,111,116,101,40,100,105,115,112,108,97,121,80,111,114,116,97,108,115,82,101,109,111,116,101,44,32,50,41,10,9,9,99,111,108,108,101,99,116,84,114,101,97,115,117,114,101,82,101,119,97,114,100,40,41,10,9,101,108,115,101,10,9,9,116,97,115,107,46,115,112,97,119,110,40)
+_lg_t[326]=string.char(102,117,110,99,116,105,111,110,40,41,10,9,9,9,102,111,114,32,95,32,61,32,49,44,32,51,32,100,111,10,9,9,9,9,102,105,114,101,82,101,109,111,116,101,40,100,105,115,112,108,97,121,80,111,114,116,97,108,115,82,101,109,111,116,101,44,32,115,108,111,116,41,10,9,9,9,9,116,97,115,107,46,119,97,105,116,40,48,46,51,53,41,10,9,9,9)
+_lg_t[327]=string.char(101,110,100,10,9,9,101,110,100,41,10,9,101,110,100,10,10,9,110,111,116,105,102,121,40,34,65,117,116,111,32,84,111,119,101,114,34,44,32,34,80,105,99,107,101,100,32,34,32,46,46,32,116,111,115,116,114,105,110,103,40,112,111,114,116,97,108,78,97,109,101,41,32,46,46,32,40,102,111,99,117,115,101,100,32,97,110,100,32,34,32,102,114,111,109,32)
+_lg_t[328]=string.char(102,111,99,117,115,32,108,105,115,116,46,34,32,111,114,32,34,32,97,115,32,115,97,102,101,115,116,32,102,97,108,108,98,97,99,107,46,34,41,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,99,104,101,100,117,108,101,84,111,119,101,114,80,111,114,116,97,108,80,105,99,107,40,100,101,108,97,121,41,10,9,105,102,32)
+_lg_t[329]=string.char(110,111,116,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,116,97,115,107,46,100,101,108,97,121,40,100,101,108,97,121,32,111,114,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,80,105,99,107,68,101,108,97,121,44,32,102,117,110)
+_lg_t[330]=string.char(99,116,105,111,110,40,41,10,9,9,99,104,111,111,115,101,84,111,119,101,114,80,111,114,116,97,108,40,41,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,99,104,101,100,117,108,101,83,116,97,114,116,68,117,110,103,101,111,110,65,102,116,101,114,87,97,118,101,67,104,97,110,103,101,40,41,10,9,116)
+_lg_t[331]=string.char(97,115,107,46,100,101,108,97,121,40,53,44,32,102,117,110,99,116,105,111,110,40,41,10,9,9,105,102,32,110,111,116,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,32,97,110,100,32,110,111,116,32,97,117,116,111,70,97,114,109,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,10,9,9,101,110,100,10,10,9,9,108,111,99)
+_lg_t[332]=string.char(97,108,32,115,116,97,114,116,68,117,110,103,101,111,110,82,101,109,111,116,101,32,61,32,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,83,116,97,114,116,68,117,110,103,101,111,110,34,41,10,9,9,105,102,32,115,116,97,114,116,68,117,110,103,101,111,110,82,101,109,111,116,101,32,116,104,101,110,10,9,9,9,102,105,114,101,82,101,109,111,116,101)
+_lg_t[333]=string.char(40,115,116,97,114,116,68,117,110,103,101,111,110,82,101,109,111,116,101,44,32,123,32,116,114,117,101,32,125,41,10,9,9,101,110,100,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,99,111,110,110,101,99,116,84,111,119,101,114,87,97,118,101,82,101,115,101,116,40,41,10,9,105,102,32,116,111,119,101,114)
+_lg_t[334]=string.char(87,97,118,101,82,101,115,101,116,67,111,110,110,101,99,116,101,100,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,108,111,99,97,108,32,100,117,110,103,101,111,110,83,101,116,116,105,110,103,115,32,61,32,87,111,114,107,115,112,97,99,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,68,117,110,103,101,111)
+_lg_t[335]=string.char(110,83,101,116,116,105,110,103,115,34,41,10,9,108,111,99,97,108,32,99,117,114,114,101,110,116,87,97,118,101,32,61,32,100,117,110,103,101,111,110,83,101,116,116,105,110,103,115,32,97,110,100,32,100,117,110,103,101,111,110,83,101,116,116,105,110,103,115,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,67,117,114,114,101,110,116,87,97,118,101)
+_lg_t[336]=string.char(34,41,10,10,9,105,102,32,110,111,116,32,99,117,114,114,101,110,116,87,97,118,101,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,116,111,119,101,114,87,97,118,101,82,101,115,101,116,67,111,110,110,101,99,116,101,100,32,61,32,116,114,117,101,10,9,99,117,114,114,101,110,116,87,97,118,101,46,67,104,97,110,103,101,100)
+_lg_t[337]=string.char(58,67,111,110,110,101,99,116,40,102,117,110,99,116,105,111,110,40,41,10,9,9,114,101,115,101,116,84,111,119,101,114,80,111,114,116,97,108,83,108,111,116,115,40,41,10,9,9,115,99,104,101,100,117,108,101,83,116,97,114,116,68,117,110,103,101,111,110,65,102,116,101,114,87,97,118,101,67,104,97,110,103,101,40,41,10,9,101,110,100,41,10,101,110,100,10)
+_lg_t[338]=string.char(10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,99,111,110,110,101,99,116,84,111,119,101,114,80,111,114,116,97,108,69,118,101,110,116,115,40,41,10,9,105,102,32,116,111,119,101,114,80,111,114,116,97,108,69,118,101,110,116,67,111,110,110,101,99,116,101,100,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,108,111)
+_lg_t[339]=string.char(99,97,108,32,100,105,115,112,108,97,121,80,111,114,116,97,108,115,82,101,109,111,116,101,32,61,32,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,68,105,115,112,108,97,121,80,111,114,116,97,108,115,34,41,10,9,105,102,32,110,111,116,32,100,105,115,112,108,97,121,80,111,114,116,97,108,115,82,101,109,111,116,101,32,116,104,101,110,10,9,9,114)
+_lg_t[340]=string.char(101,116,117,114,110,10,9,101,110,100,10,10,9,116,111,119,101,114,80,111,114,116,97,108,69,118,101,110,116,67,111,110,110,101,99,116,101,100,32,61,32,116,114,117,101,10,9,100,105,115,112,108,97,121,80,111,114,116,97,108,115,82,101,109,111,116,101,46,79,110,67,108,105,101,110,116,69,118,101,110,116,58,67,111,110,110,101,99,116,40,102,117,110,99,116,105)
+_lg_t[341]=string.char(111,110,40,115,108,111,116,44,32,112,111,114,116,97,108,78,97,109,101,44,32,97,99,116,105,111,110,41,10,9,9,105,102,32,97,99,116,105,111,110,32,61,61,32,34,82,101,118,101,97,108,34,32,116,104,101,110,10,9,9,9,114,101,115,101,116,84,111,119,101,114,80,111,114,116,97,108,83,108,111,116,115,40,41,10,9,9,9,115,99,104,101,100,117,108,101)
+_lg_t[342]=string.char(84,111,119,101,114,80,111,114,116,97,108,80,105,99,107,40,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119)
+_lg_t[343]=string.char(101,114,80,105,99,107,68,101,108,97,121,32,43,32,48,46,56,41,10,9,9,101,108,115,101,105,102,32,97,99,116,105,111,110,32,61,61,32,34,68,105,115,112,108,97,121,34,32,116,104,101,110,10,9,9,9,116,111,119,101,114,80,111,114,116,97,108,83,108,111,116,115,91,115,108,111,116,93,32,61,32,110,111,114,109,97,108,105,122,101,80,111,114,116,97,108)
+_lg_t[344]=string.char(78,97,109,101,40,112,111,114,116,97,108,78,97,109,101,41,10,9,9,9,115,99,104,101,100,117,108,101,84,111,119,101,114,80,111,114,116,97,108,80,105,99,107,40,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,80,105,99,107,68,101,108,97,121,41,10,9,9,101,110,100,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32)
+_lg_t[345]=string.char(102,117,110,99,116,105,111,110,32,105,115,84,111,119,101,114,82,101,116,114,121,76,111,98,98,121,68,117,109,109,121,65,114,101,97,40,41,10,9,108,111,99,97,108,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,61,32,87,111,114,107,115,112,97,99,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,69,110,101,109,105,101,115,34,41)
+_lg_t[346]=string.char(10,9,105,102,32,110,111,116,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,108,111,99,97,108,32,100,117,109,109,121,67,111,117,110,116,32,61,32,48,10,10,9,102,111,114,32,105,110,100,101,120,32,61,32,49,44,32,54,32,100,111,10,9,9,105)
+_lg_t[347]=string.char(102,32,101,110,101,109,105,101,115,70,111,108,100,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,68,117,109,109,121,34,32,46,46,32,116,111,115,116,114,105,110,103,40,105,110,100,101,120,41,41,32,116,104,101,110,10,9,9,9,100,117,109,109,121,67,111,117,110,116,32,61,32,100,117,109,109,121,67,111,117,110,116,32,43,32,49,10,9)
+_lg_t[348]=string.char(9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,100,117,109,109,121,67,111,117,110,116,32,62,61,32,51,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,104,97,115,84,111,119,101,114,82,101,116,114,121,65,108,105,118,101,69,110,101,109,121,40,41,10,9,108,111,99,97,108,32,101,110,101,109,105,101,115,70)
+_lg_t[349]=string.char(111,108,100,101,114,32,61,32,87,111,114,107,115,112,97,99,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,69,110,101,109,105,101,115,34,41,10,9,105,102,32,110,111,116,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,102,111,114)
+_lg_t[350]=string.char(32,95,44,32,101,110,101,109,121,32,105,110,32,105,112,97,105,114,115,40,101,110,101,109,105,101,115,70,111,108,100,101,114,58,71,101,116,67,104,105,108,100,114,101,110,40,41,41,32,100,111,10,9,9,105,102,32,110,111,116,32,101,110,101,109,121,46,78,97,109,101,58,109,97,116,99,104,40,34,94,68,117,109,109,121,37,100,43,36,34,41,10,9,9,9,97)
+_lg_t[351]=string.char(110,100,32,101,110,101,109,121,58,71,101,116,65,116,116,114,105,98,117,116,101,40,34,68,101,97,100,34,41,32,126,61,32,116,114,117,101,10,9,9,9,97,110,100,32,101,110,101,109,121,58,71,101,116,65,116,116,114,105,98,117,116,101,40,34,68,101,102,101,97,116,101,100,34,41,32,126,61,32,116,114,117,101,10,9,9,116,104,101,110,10,9,9,9,108,111)
+_lg_t[352]=string.char(99,97,108,32,104,117,109,97,110,111,105,100,32,61,32,101,110,101,109,121,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,79,102,67,108,97,115,115,40,34,72,117,109,97,110,111,105,100,34,41,32,111,114,32,101,110,101,109,121,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,72,117,109,97,110,111,105,100,34,44,32,116,114,117,101,41)
+_lg_t[353]=string.char(10,10,9,9,9,105,102,32,110,111,116,32,104,117,109,97,110,111,105,100,32,111,114,32,104,117,109,97,110,111,105,100,46,72,101,97,108,116,104,32,62,32,48,32,116,104,101,110,10,9,9,9,9,114,101,116,117,114,110,32,116,114,117,101,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,102,97,108,115)
+_lg_t[354]=string.char(101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,105,115,71,117,105,69,102,102,101,99,116,105,118,101,108,121,86,105,115,105,98,108,101,40,103,117,105,79,98,106,101,99,116,41,10,9,108,111,99,97,108,32,99,117,114,114,101,110,116,32,61,32,103,117,105,79,98,106,101,99,116,10,9,108,111,99,97,108,32,112,108,97,121,101)
+_lg_t[355]=string.char(114,71,117,105,32,61,32,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,80,108,97,121,101,114,71,117,105,34,41,10,10,9,119,104,105,108,101,32,99,117,114,114,101,110,116,32,97,110,100,32,99,117,114,114,101,110,116,32,126,61,32,112,108,97,121,101,114,71,117,105,32,100,111,10,9,9,105,102,32,99,117,114,114,101)
+_lg_t[356]=string.char(110,116,58,73,115,65,40,34,71,117,105,79,98,106,101,99,116,34,41,32,97,110,100,32,110,111,116,32,99,117,114,114,101,110,116,46,86,105,115,105,98,108,101,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,9,101,110,100,10,10,9,9,105,102,32,99,117,114,114,101,110,116,58,73,115,65,40,34,76,97,121,101,114,67)
+_lg_t[357]=string.char(111,108,108,101,99,116,111,114,34,41,32,97,110,100,32,110,111,116,32,99,117,114,114,101,110,116,46,69,110,97,98,108,101,100,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,9,101,110,100,10,10,9,9,99,117,114,114,101,110,116,32,61,32,99,117,114,114,101,110,116,46,80,97,114,101,110,116,10,9,101,110,100,10,10)
+_lg_t[358]=string.char(9,114,101,116,117,114,110,32,116,114,117,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,105,115,72,117,98,71,117,105,79,98,106,101,99,116,40,103,117,105,79,98,106,101,99,116,41,10,9,102,111,114,32,95,44,32,97,110,99,101,115,116,111,114,32,105,110,32,105,112,97,105,114,115,40,103,117,105,79,98,106,101,99,116,58)
+_lg_t[359]=string.char(71,101,116,65,110,99,101,115,116,111,114,115,40,41,41,32,100,111,10,9,9,108,111,99,97,108,32,97,110,99,101,115,116,111,114,78,97,109,101,32,61,32,115,116,114,105,110,103,46,108,111,119,101,114,40,97,110,99,101,115,116,111,114,46,78,97,109,101,32,111,114,32,34,34,41,10,10,9,9,105,102,32,97,110,99,101,115,116,111,114,78,97,109,101,58,102)
+_lg_t[360]=string.char(105,110,100,40,34,107,114,121,112,116,101,120,34,44,32,49,44,32,116,114,117,101,41,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,116,114,117,101,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,102,97,108,115,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,104,97,115,83,116,97)
+_lg_t[361]=string.char(114,116,84,101,120,116,40,103,117,105,79,98,106,101,99,116,41,10,9,108,111,99,97,108,32,116,101,120,116,32,61,32,34,34,10,10,9,105,102,32,103,117,105,79,98,106,101,99,116,58,73,115,65,40,34,84,101,120,116,76,97,98,101,108,34,41,32,111,114,32,103,117,105,79,98,106,101,99,116,58,73,115,65,40,34,84,101,120,116,66,117,116,116,111,110,34)
+_lg_t[362]=string.char(41,32,111,114,32,103,117,105,79,98,106,101,99,116,58,73,115,65,40,34,84,101,120,116,66,111,120,34,41,32,116,104,101,110,10,9,9,116,101,120,116,32,61,32,116,111,115,116,114,105,110,103,40,103,117,105,79,98,106,101,99,116,46,84,101,120,116,32,111,114,32,34,34,41,10,9,101,110,100,10,10,9,108,111,99,97,108,32,99,111,109,98,105,110,101,100)
+_lg_t[363]=string.char(32,61,32,115,116,114,105,110,103,46,108,111,119,101,114,40,116,111,115,116,114,105,110,103,40,103,117,105,79,98,106,101,99,116,46,78,97,109,101,32,111,114,32,34,34,41,32,46,46,32,34,32,34,32,46,46,32,116,101,120,116,41,10,10,9,105,102,32,110,111,116,32,99,111,109,98,105,110,101,100,58,102,105,110,100,40,34,115,116,97,114,116,34,44,32,49)
+_lg_t[364]=string.char(44,32,116,114,117,101,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,110,111,116,32,40,10,9,9,99,111,109,98,105,110,101,100,58,102,105,110,100,40,34,97,117,116,111,32,115,116,97,114,116,34,44,32,49,44,32,116,114,117,101,41,10,9,9,111,114,32,99,111,109,98)
+_lg_t[365]=string.char(105,110,101,100,58,102,105,110,100,40,34,114,101,116,114,121,34,44,32,49,44,32,116,114,117,101,41,10,9,9,111,114,32,99,111,109,98,105,110,101,100,58,102,105,110,100,40,34,100,101,108,97,121,34,44,32,49,44,32,116,114,117,101,41,10,9,9,111,114,32,99,111,109,98,105,110,101,100,58,102,105,110,100,40,34,97,116,116,101,109,112,116,34,44,32,49)
+_lg_t[366]=string.char(44,32,116,114,117,101,41,10,9,9,111,114,32,99,111,109,98,105,110,101,100,58,102,105,110,100,40,34,108,111,98,98,121,34,44,32,49,44,32,116,114,117,101,41,10,9,9,111,114,32,99,111,109,98,105,110,101,100,58,102,105,110,100,40,34,115,116,97,114,116,101,114,34,44,32,49,44,32,116,114,117,101,41,10,9,41,10,101,110,100,10,10,108,111,99,97)
+_lg_t[367]=string.char(108,32,102,117,110,99,116,105,111,110,32,105,115,76,105,107,101,108,121,71,97,109,101,83,116,97,114,116,71,117,105,40,103,117,105,79,98,106,101,99,116,41,10,9,105,102,32,110,111,116,32,105,115,71,117,105,69,102,102,101,99,116,105,118,101,108,121,86,105,115,105,98,108,101,40,103,117,105,79,98,106,101,99,116,41,32,116,104,101,110,10,9,9,114,101,116)
+_lg_t[368]=string.char(117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,105,102,32,105,115,72,117,98,71,117,105,79,98,106,101,99,116,40,103,117,105,79,98,106,101,99,116,41,32,111,114,32,110,111,116,32,104,97,115,83,116,97,114,116,84,101,120,116,40,103,117,105,79,98,106,101,99,116,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101)
+_lg_t[369]=string.char(10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,103,117,105,79,98,106,101,99,116,58,73,115,65,40,34,71,117,105,66,117,116,116,111,110,34,41,10,9,9,111,114,32,103,117,105,79,98,106,101,99,116,58,73,115,65,40,34,84,101,120,116,76,97,98,101,108,34,41,10,9,9,111,114,32,103,117,105,79,98,106,101,99,116,58,73,115,65,40,34,73,109)
+_lg_t[370]=string.char(97,103,101,76,97,98,101,108,34,41,10,9,9,111,114,32,103,117,105,79,98,106,101,99,116,58,73,115,65,40,34,70,114,97,109,101,34,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,67,108,105,99,107,97,98,108,101,83,116,97,114,116,71,117,105,40,103,117,105,79,98,106,101,99,116,41,10,9,108,111,99,97)
+_lg_t[371]=string.char(108,32,99,117,114,114,101,110,116,32,61,32,103,117,105,79,98,106,101,99,116,10,9,108,111,99,97,108,32,112,108,97,121,101,114,71,117,105,32,61,32,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,80,108,97,121,101,114,71,117,105,34,41,10,10,9,119,104,105,108,101,32,99,117,114,114,101,110,116,32,97,110,100,32)
+_lg_t[372]=string.char(99,117,114,114,101,110,116,32,126,61,32,112,108,97,121,101,114,71,117,105,32,100,111,10,9,9,105,102,32,99,117,114,114,101,110,116,58,73,115,65,40,34,71,117,105,66,117,116,116,111,110,34,41,32,97,110,100,32,105,115,71,117,105,69,102,102,101,99,116,105,118,101,108,121,86,105,115,105,98,108,101,40,99,117,114,114,101,110,116,41,32,97,110,100,32,110)
+_lg_t[373]=string.char(111,116,32,105,115,72,117,98,71,117,105,79,98,106,101,99,116,40,99,117,114,114,101,110,116,41,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,99,117,114,114,101,110,116,10,9,9,101,110,100,10,10,9,9,99,117,114,114,101,110,116,32,61,32,99,117,114,114,101,110,116,46,80,97,114,101,110,116,10,9,101,110,100,10,10,9,114,101,116,117,114)
+_lg_t[374]=string.char(110,32,103,117,105,79,98,106,101,99,116,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,102,105,110,100,86,105,115,105,98,108,101,71,97,109,101,83,116,97,114,116,66,117,116,116,111,110,40,41,10,9,108,111,99,97,108,32,112,108,97,121,101,114,71,117,105,32,61,32,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115,116)
+_lg_t[375]=string.char(67,104,105,108,100,40,34,80,108,97,121,101,114,71,117,105,34,41,10,9,105,102,32,110,111,116,32,112,108,97,121,101,114,71,117,105,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101,110,100,10,10,9,102,111,114,32,95,44,32,100,101,115,99,101,110,100,97,110,116,32,105,110,32,105,112,97,105,114,115,40,112,108,97,121,101,114)
+_lg_t[376]=string.char(71,117,105,58,71,101,116,68,101,115,99,101,110,100,97,110,116,115,40,41,41,32,100,111,10,9,9,105,102,32,105,115,76,105,107,101,108,121,71,97,109,101,83,116,97,114,116,71,117,105,40,100,101,115,99,101,110,100,97,110,116,41,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,103,101,116,67,108,105,99,107,97,98,108,101,83,116,97,114,116,71)
+_lg_t[377]=string.char(117,105,40,100,101,115,99,101,110,100,97,110,116,41,10,9,9,101,110,100,10,9,101,110,100,10,10,9,108,111,99,97,108,32,99,97,109,101,114,97,32,61,32,87,111,114,107,115,112,97,99,101,46,67,117,114,114,101,110,116,67,97,109,101,114,97,10,9,108,111,99,97,108,32,118,105,101,119,112,111,114,116,83,105,122,101,32,61,32,99,97,109,101,114,97,32)
+_lg_t[378]=string.char(97,110,100,32,99,97,109,101,114,97,46,86,105,101,119,112,111,114,116,83,105,122,101,32,111,114,32,86,101,99,116,111,114,50,46,110,101,119,40,49,57,50,48,44,32,49,48,56,48,41,10,9,108,111,99,97,108,32,98,101,115,116,71,117,105,10,9,108,111,99,97,108,32,98,101,115,116,65,114,101,97,32,61,32,48,10,10,9,102,111,114,32,95,44,32,100)
+_lg_t[379]=string.char(101,115,99,101,110,100,97,110,116,32,105,110,32,105,112,97,105,114,115,40,112,108,97,121,101,114,71,117,105,58,71,101,116,68,101,115,99,101,110,100,97,110,116,115,40,41,41,32,100,111,10,9,9,105,102,32,100,101,115,99,101,110,100,97,110,116,58,73,115,65,40,34,71,117,105,79,98,106,101,99,116,34,41,32,97,110,100,32,105,115,71,117,105,69,102,102)
+_lg_t[380]=string.char(101,99,116,105,118,101,108,121,86,105,115,105,98,108,101,40,100,101,115,99,101,110,100,97,110,116,41,32,97,110,100,32,110,111,116,32,105,115,72,117,98,71,117,105,79,98,106,101,99,116,40,100,101,115,99,101,110,100,97,110,116,41,32,116,104,101,110,10,9,9,9,108,111,99,97,108,32,115,105,122,101,32,61,32,100,101,115,99,101,110,100,97,110,116,46,65)
+_lg_t[381]=string.char(98,115,111,108,117,116,101,83,105,122,101,10,9,9,9,108,111,99,97,108,32,112,111,115,105,116,105,111,110,32,61,32,100,101,115,99,101,110,100,97,110,116,46,65,98,115,111,108,117,116,101,80,111,115,105,116,105,111,110,10,9,9,9,108,111,99,97,108,32,99,101,110,116,101,114,88,32,61,32,112,111,115,105,116,105,111,110,46,88,32,43,32,115,105,122,101)
+_lg_t[382]=string.char(46,88,32,47,32,50,10,9,9,9,108,111,99,97,108,32,99,101,110,116,101,114,89,32,61,32,112,111,115,105,116,105,111,110,46,89,32,43,32,115,105,122,101,46,89,32,47,32,50,10,9,9,9,108,111,99,97,108,32,97,114,101,97,32,61,32,115,105,122,101,46,88,32,42,32,115,105,122,101,46,89,10,10,9,9,9,105,102,32,115,105,122,101,46,88,32)
+_lg_t[383]=string.char(62,61,32,118,105,101,119,112,111,114,116,83,105,122,101,46,88,32,42,32,48,46,50,53,10,9,9,9,9,97,110,100,32,115,105,122,101,46,89,32,62,61,32,52,53,10,9,9,9,9,97,110,100,32,99,101,110,116,101,114,88,32,62,61,32,118,105,101,119,112,111,114,116,83,105,122,101,46,88,32,42,32,48,46,50,53,10,9,9,9,9,97,110,100,32,99)
+_lg_t[384]=string.char(101,110,116,101,114,88,32,60,61,32,118,105,101,119,112,111,114,116,83,105,122,101,46,88,32,42,32,48,46,55,53,10,9,9,9,9,97,110,100,32,99,101,110,116,101,114,89,32,62,61,32,118,105,101,119,112,111,114,116,83,105,122,101,46,89,32,42,32,48,46,51,48,10,9,9,9,9,97,110,100,32,99,101,110,116,101,114,89,32,60,61,32,118,105,101,119)
+_lg_t[385]=string.char(112,111,114,116,83,105,122,101,46,89,32,42,32,48,46,55,53,10,9,9,9,9,97,110,100,32,97,114,101,97,32,62,32,98,101,115,116,65,114,101,97,10,9,9,9,116,104,101,110,10,9,9,9,9,98,101,115,116,71,117,105,32,61,32,100,101,115,99,101,110,100,97,110,116,10,9,9,9,9,98,101,115,116,65,114,101,97,32,61,32,97,114,101,97,10,9)
+_lg_t[386]=string.char(9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,98,101,115,116,71,117,105,32,97,110,100,32,103,101,116,67,108,105,99,107,97,98,108,101,83,116,97,114,116,71,117,105,40,98,101,115,116,71,117,105,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,116,97,112,71,117,105,79,98)
+_lg_t[387]=string.char(106,101,99,116,40,103,117,105,79,98,106,101,99,116,41,10,9,105,102,32,110,111,116,32,103,117,105,79,98,106,101,99,116,32,111,114,32,110,111,116,32,103,117,105,79,98,106,101,99,116,58,73,115,65,40,34,71,117,105,79,98,106,101,99,116,34,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,108)
+_lg_t[388]=string.char(111,99,97,108,32,97,98,115,111,108,117,116,101,80,111,115,105,116,105,111,110,32,61,32,103,117,105,79,98,106,101,99,116,46,65,98,115,111,108,117,116,101,80,111,115,105,116,105,111,110,10,9,108,111,99,97,108,32,97,98,115,111,108,117,116,101,83,105,122,101,32,61,32,103,117,105,79,98,106,101,99,116,46,65,98,115,111,108,117,116,101,83,105,122,101,10)
+_lg_t[389]=string.char(10,9,105,102,32,97,98,115,111,108,117,116,101,83,105,122,101,46,88,32,60,61,32,48,32,111,114,32,97,98,115,111,108,117,116,101,83,105,122,101,46,89,32,60,61,32,48,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,108,111,99,97,108,32,120,32,61,32,97,98,115,111,108,117,116,101,80,111,115)
+_lg_t[390]=string.char(105,116,105,111,110,46,88,32,43,32,97,98,115,111,108,117,116,101,83,105,122,101,46,88,32,47,32,50,10,9,108,111,99,97,108,32,121,32,61,32,97,98,115,111,108,117,116,101,80,111,115,105,116,105,111,110,46,89,32,43,32,97,98,115,111,108,117,116,101,83,105,122,101,46,89,32,47,32,50,10,9,108,111,99,97,108,32,99,108,105,99,107,101,100,32,61)
+_lg_t[391]=string.char(32,102,97,108,115,101,10,10,9,105,102,32,103,117,105,79,98,106,101,99,116,58,73,115,65,40,34,71,117,105,66,117,116,116,111,110,34,41,32,97,110,100,32,116,121,112,101,111,102,40,103,101,116,99,111,110,110,101,99,116,105,111,110,115,41,32,61,61,32,34,102,117,110,99,116,105,111,110,34,32,116,104,101,110,10,9,9,112,99,97,108,108,40,102,117,110)
+_lg_t[392]=string.char(99,116,105,111,110,40,41,10,9,9,9,102,111,114,32,95,44,32,99,111,110,110,101,99,116,105,111,110,32,105,110,32,105,112,97,105,114,115,40,103,101,116,99,111,110,110,101,99,116,105,111,110,115,40,103,117,105,79,98,106,101,99,116,46,65,99,116,105,118,97,116,101,100,41,41,32,100,111,10,9,9,9,9,99,111,110,110,101,99,116,105,111,110,58,70,105)
+_lg_t[393]=string.char(114,101,40,41,10,9,9,9,9,99,108,105,99,107,101,100,32,61,32,116,114,117,101,10,9,9,9,101,110,100,10,9,9,101,110,100,41,10,10,9,9,112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,41,10,9,9,9,102,111,114,32,95,44,32,99,111,110,110,101,99,116,105,111,110,32,105,110,32,105,112,97,105,114,115,40,103,101,116,99,111,110,110)
+_lg_t[394]=string.char(101,99,116,105,111,110,115,40,103,117,105,79,98,106,101,99,116,46,77,111,117,115,101,66,117,116,116,111,110,49,67,108,105,99,107,41,41,32,100,111,10,9,9,9,9,99,111,110,110,101,99,116,105,111,110,58,70,105,114,101,40,41,10,9,9,9,9,99,108,105,99,107,101,100,32,61,32,116,114,117,101,10,9,9,9,101,110,100,10,9,9,101,110,100,41,10)
+_lg_t[395]=string.char(9,101,110,100,10,10,9,108,111,99,97,108,32,111,107,32,61,32,102,97,108,115,101,10,10,9,105,102,32,86,105,114,116,117,97,108,73,110,112,117,116,77,97,110,97,103,101,114,32,116,104,101,110,10,9,9,111,107,32,61,32,112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,41,10,9,9,9,86,105,114,116,117,97,108,73,110,112,117,116,77,97,110)
+_lg_t[396]=string.char(97,103,101,114,58,83,101,110,100,77,111,117,115,101,66,117,116,116,111,110,69,118,101,110,116,40,120,44,32,121,44,32,48,44,32,116,114,117,101,44,32,103,97,109,101,44,32,48,41,10,9,9,9,116,97,115,107,46,119,97,105,116,40,48,46,48,53,41,10,9,9,9,86,105,114,116,117,97,108,73,110,112,117,116,77,97,110,97,103,101,114,58,83,101,110,100)
+_lg_t[397]=string.char(77,111,117,115,101,66,117,116,116,111,110,69,118,101,110,116,40,120,44,32,121,44,32,48,44,32,102,97,108,115,101,44,32,103,97,109,101,44,32,48,41,10,9,9,101,110,100,41,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,99,108,105,99,107,101,100,32,111,114,32,111,107,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110)
+_lg_t[398]=string.char(32,105,115,68,117,110,103,101,111,110,83,116,97,114,116,87,97,105,116,105,110,103,40,41,10,9,108,111,99,97,108,32,100,117,110,103,101,111,110,83,116,97,114,116,101,100,32,61,32,87,111,114,107,115,112,97,99,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,100,117,110,103,101,111,110,83,116,97,114,116,101,100,34,41,10,10,9,105,102)
+_lg_t[399]=string.char(32,100,117,110,103,101,111,110,83,116,97,114,116,101,100,32,97,110,100,32,100,117,110,103,101,111,110,83,116,97,114,116,101,100,58,73,115,65,40,34,66,111,111,108,86,97,108,117,101,34,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,100,117,110,103,101,111,110,83,116,97,114,116,101,100,46,86,97,108,117,101,32,126,61,32,116,114,117,101,10,9)
+_lg_t[400]=string.char(101,110,100,10,10,9,114,101,116,117,114,110,32,102,97,108,115,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,104,111,117,108,100,82,101,116,114,121,84,111,119,101,114,83,116,97,114,116,40,41,10,9,105,102,32,110,111,116,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,83,116,97,114,116,82,101)
+_lg_t[401]=string.char(116,114,121,32,111,114,32,116,111,119,101,114,83,116,97,114,116,82,101,116,114,121,82,117,110,110,105,110,103,32,111,114,32,116,111,119,101,114,84,114,101,97,115,117,114,101,67,111,108,108,101,99,116,105,110,103,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,108,111,99,97,108,32,114,101,119,97,114,100)
+_lg_t[402]=string.char(80,97,114,116,32,61,32,103,101,116,84,114,101,97,115,117,114,101,82,101,119,97,114,100,80,97,114,116,40,41,10,9,105,102,32,114,101,119,97,114,100,80,97,114,116,32,97,110,100,32,110,111,116,32,105,115,84,114,101,97,115,117,114,101,82,101,119,97,114,100,79,110,67,111,111,108,100,111,119,110,40,114,101,119,97,114,100,80,97,114,116,41,32,116,104,101)
+_lg_t[403]=string.char(110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,105,102,32,105,115,68,117,110,103,101,111,110,83,116,97,114,116,87,97,105,116,105,110,103,40,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,116,114,117,101,10,9,101,110,100,10,10,9,105,102,32,111,115,46,99,108,111,99,107,40,41,32,45,32,108,97,115)
+_lg_t[404]=string.char(116,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,32,60,32,115,101,116,116,105,110,103,115,46,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,108,111,99,97,108,32,115,116,97,114,116,66,117,116,116,111,110,32,61,32)
+_lg_t[405]=string.char(102,105,110,100,86,105,115,105,98,108,101,71,97,109,101,83,116,97,114,116,66,117,116,116,111,110,40,41,10,9,105,102,32,115,116,97,114,116,66,117,116,116,111,110,32,116,104,101,110,10,9,9,108,97,115,116,86,105,115,105,98,108,101,83,116,97,114,116,66,117,116,116,111,110,78,97,109,101,32,61,32,115,116,97,114,116,66,117,116,116,111,110,46,78,97,109)
+_lg_t[406]=string.char(101,10,9,9,114,101,116,117,114,110,32,116,114,117,101,10,9,101,110,100,10,10,9,108,97,115,116,86,105,115,105,98,108,101,83,116,97,114,116,66,117,116,116,111,110,78,97,109,101,32,61,32,110,105,108,10,10,9,105,102,32,110,111,116,32,87,111,114,107,115,112,97,99,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,69,110,101,109,105)
+_lg_t[407]=string.char(101,115,34,41,32,111,114,32,114,101,119,97,114,100,80,97,114,116,32,111,114,32,104,97,115,84,111,119,101,114,82,101,116,114,121,65,108,105,118,101,69,110,101,109,121,40,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,105,102,32,116,111,119,101,114,80,111,114,116,97,108,80,105,99,107,76,111,99)
+_lg_t[408]=string.char(107,101,100,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,108,97,115,116,84,111,119,101,114,80,111,114,116,97,108,80,105,99,107,32,62,32,48,32,97,110,100,32,111,115,46,99,108,111,99,107,40,41,32,45,32,108,97,115,116,84,111,119,101,114,80,111,114,116,97,108,80,105,99,107,32,62,61,32,115,101,116,116,105,110,103,115,46,84,111,119,101,114)
+_lg_t[409]=string.char(83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,10,9,101,110,100,10,10,9,115,99,97,110,80,111,114,116,97,108,71,117,105,40,41,10,9,114,101,116,117,114,110,32,110,101,120,116,40,116,111,119,101,114,80,111,114,116,97,108,83,108,111,116,115,41,32,61,61,32,110,105,108,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110)
+_lg_t[410]=string.char(32,114,101,116,114,121,84,111,119,101,114,83,116,97,114,116,73,102,78,101,101,100,101,100,40,41,10,9,105,102,32,110,111,116,32,115,104,111,117,108,100,82,101,116,114,121,84,111,119,101,114,83,116,97,114,116,40,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,108,111,99,97,108,32,115,116,97,114,116,66,117,116,116,111)
+_lg_t[411]=string.char(110,32,61,32,102,105,110,100,86,105,115,105,98,108,101,71,97,109,101,83,116,97,114,116,66,117,116,116,111,110,40,41,10,9,108,111,99,97,108,32,115,116,97,114,116,68,117,110,103,101,111,110,82,101,109,111,116,101,32,61,32,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,83,116,97,114,116,68,117,110,103,101,111,110,34,41,10,9,105,102,32,110)
+_lg_t[412]=string.char(111,116,32,115,116,97,114,116,68,117,110,103,101,111,110,82,101,109,111,116,101,32,97,110,100,32,110,111,116,32,115,116,97,114,116,66,117,116,116,111,110,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,108,97,115,116,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,32,61,32,111,115,46,99,108,111,99,107,40,41,10)
+_lg_t[413]=string.char(9,116,111,119,101,114,83,116,97,114,116,82,101,116,114,121,82,117,110,110,105,110,103,32,61,32,116,114,117,101,10,10,9,116,97,115,107,46,115,112,97,119,110,40,102,117,110,99,116,105,111,110,40,41,10,9,9,108,111,99,97,108,32,97,116,116,101,109,112,116,115,32,61,32,48,10,10,9,9,119,104,105,108,101,32,115,101,116,116,105,110,103,115,46,65,117)
+_lg_t[414]=string.char(116,111,84,111,119,101,114,32,111,114,32,97,117,116,111,70,97,114,109,32,100,111,10,9,9,9,97,116,116,101,109,112,116,115,32,61,32,97,116,116,101,109,112,116,115,32,43,32,49,10,10,9,9,9,105,102,32,110,111,116,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,32,97,110,100,32,110,111,116,32,97,117,116,111,70,97,114,109)
+_lg_t[415]=string.char(32,116,104,101,110,10,9,9,9,9,98,114,101,97,107,10,9,9,9,101,110,100,10,10,9,9,9,105,102,32,87,111,114,107,115,112,97,99,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,100,117,110,103,101,111,110,83,116,97,114,116,101,100,34,41,32,97,110,100,32,110,111,116,32,105,115,68,117,110,103,101,111,110,83,116,97,114,116,87)
+_lg_t[416]=string.char(97,105,116,105,110,103,40,41,32,116,104,101,110,10,9,9,9,9,98,114,101,97,107,10,9,9,9,101,110,100,10,10,9,9,9,105,102,32,115,116,97,114,116,66,117,116,116,111,110,32,97,110,100,32,105,115,71,117,105,69,102,102,101,99,116,105,118,101,108,121,86,105,115,105,98,108,101,40,115,116,97,114,116,66,117,116,116,111,110,41,32,116,104,101,110,10)
+_lg_t[417]=string.char(9,9,9,9,116,97,112,71,117,105,79,98,106,101,99,116,40,115,116,97,114,116,66,117,116,116,111,110,41,10,9,9,9,101,108,115,101,10,9,9,9,9,115,116,97,114,116,66,117,116,116,111,110,32,61,32,102,105,110,100,86,105,115,105,98,108,101,71,97,109,101,83,116,97,114,116,66,117,116,116,111,110,40,41,10,9,9,9,101,110,100,10,10,9,9,9)
+_lg_t[418]=string.char(105,102,32,115,116,97,114,116,68,117,110,103,101,111,110,82,101,109,111,116,101,32,116,104,101,110,10,9,9,9,9,102,105,114,101,82,101,109,111,116,101,40,115,116,97,114,116,68,117,110,103,101,111,110,82,101,109,111,116,101,44,32,123,32,116,114,117,101,32,125,41,10,9,9,9,101,110,100,10,10,9,9,9,105,102,32,110,111,116,32,105,115,68,117,110,103)
+_lg_t[419]=string.char(101,111,110,83,116,97,114,116,87,97,105,116,105,110,103,40,41,32,97,110,100,32,97,116,116,101,109,112,116,115,32,62,61,32,53,32,116,104,101,110,10,9,9,9,9,98,114,101,97,107,10,9,9,9,101,110,100,10,10,9,9,9,116,97,115,107,46,119,97,105,116,40,105,115,68,117,110,103,101,111,110,83,116,97,114,116,87,97,105,116,105,110,103,40,41,32)
+_lg_t[420]=string.char(97,110,100,32,48,46,50,32,111,114,32,48,46,51,41,10,9,9,101,110,100,10,10,9,9,116,111,119,101,114,83,116,97,114,116,82,101,116,114,121,82,117,110,110,105,110,103,32,61,32,102,97,108,115,101,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,116,97,114,116,65,117,116,111,84,111,119,101,114)
+_lg_t[421]=string.char(87,97,116,99,104,101,114,40,41,10,9,116,97,115,107,46,115,112,97,119,110,40,102,117,110,99,116,105,111,110,40,41,10,9,9,119,104,105,108,101,32,116,97,115,107,46,119,97,105,116,40,49,41,32,100,111,10,9,9,9,99,111,110,110,101,99,116,84,111,119,101,114,80,111,114,116,97,108,69,118,101,110,116,115,40,41,10,9,9,9,99,111,110,110,101,99)
+_lg_t[422]=string.char(116,84,111,119,101,114,87,97,118,101,82,101,115,101,116,40,41,10,10,9,9,9,105,102,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,32,111,114,32,97,117,116,111,70,97,114,109,32,116,104,101,110,10,9,9,9,9,108,111,99,97,108,32,114,101,119,97,114,100,80,97,114,116,32,61,32,103,101,116,84,114,101,97,115,117,114,101,82)
+_lg_t[423]=string.char(101,119,97,114,100,80,97,114,116,40,41,10,10,9,9,9,9,105,102,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,84,114,101,97,115,117,114,101,82,101,119,97,114,100,115,10,9,9,9,9,9,97,110,100,32,114,101,119,97,114,100,80,97,114,116,10,9,9,9,9,9,97,110,100,32,110,111,116,32,116,111,119,101,114,84,114,101,97)
+_lg_t[424]=string.char(115,117,114,101,67,111,108,108,101,99,116,105,110,103,10,9,9,9,9,9,97,110,100,32,110,111,116,32,105,115,84,114,101,97,115,117,114,101,82,101,119,97,114,100,79,110,67,111,111,108,100,111,119,110,40,114,101,119,97,114,100,80,97,114,116,41,10,9,9,9,9,116,104,101,110,10,9,9,9,9,9,102,105,114,101,82,101,109,111,116,101,40,114,101,115,111)
+_lg_t[425]=string.char(108,118,101,82,101,109,111,116,101,40,34,68,105,115,112,108,97,121,80,111,114,116,97,108,115,34,41,44,32,50,41,10,9,9,9,9,9,99,111,108,108,101,99,116,84,114,101,97,115,117,114,101,82,101,119,97,114,100,40,41,10,9,9,9,9,101,108,115,101,105,102,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,32,97,110,100,32,110)
+_lg_t[426]=string.char(111,116,32,116,111,119,101,114,80,111,114,116,97,108,80,105,99,107,76,111,99,107,101,100,32,97,110,100,32,110,111,116,32,116,111,119,101,114,84,114,101,97,115,117,114,101,67,111,108,108,101,99,116,105,110,103,32,116,104,101,110,10,9,9,9,9,9,115,99,104,101,100,117,108,101,84,111,119,101,114,80,111,114,116,97,108,80,105,99,107,40,48,46,48,53,41)
+_lg_t[427]=string.char(10,9,9,9,9,101,110,100,10,10,9,9,9,9,114,101,116,114,121,84,111,119,101,114,83,116,97,114,116,73,102,78,101,101,100,101,100,40,41,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,68,117,110,103,101,111,110,77,97,112,65,116,116,101)
+_lg_t[428]=string.char(109,112,116,115,40,109,97,112,78,97,109,101,41,10,9,114,101,116,117,114,110,32,100,117,110,103,101,111,110,77,97,112,65,108,105,97,115,101,115,91,109,97,112,78,97,109,101,93,32,111,114,32,123,32,109,97,112,78,97,109,101,32,125,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,109,97,107,101,67,114,101,97,116,101,76,111)
+_lg_t[429]=string.char(98,98,121,80,97,121,108,111,97,100,40,100,117,110,103,101,111,110,80,114,101,115,101,116,44,32,109,97,112,78,97,109,101,44,32,108,101,118,101,108,41,10,9,114,101,116,117,114,110,32,123,10,9,9,77,97,112,32,61,32,109,97,112,78,97,109,101,44,10,9,9,67,97,108,97,109,105,116,121,32,61,32,115,101,116,116,105,110,103,115,46,67,97,108,97,109)
+_lg_t[430]=string.char(105,116,121,77,111,100,105,102,105,101,114,44,10,9,9,72,97,114,100,99,111,114,101,32,61,32,115,101,116,116,105,110,103,115,46,72,97,114,100,99,111,114,101,44,10,9,9,78,111,72,105,116,32,61,32,115,101,116,116,105,110,103,115,46,78,111,72,105,116,44,10,9,9,68,105,102,102,105,99,117,108,116,121,32,61,32,100,117,110,103,101,111,110,80,114,101)
+_lg_t[431]=string.char(115,101,116,46,68,105,102,102,105,99,117,108,116,121,32,111,114,32,34,67,97,108,97,109,105,116,121,34,44,10,9,9,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,100,117,110,103,101,111,110,80,114,101,115,101,116,46,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,111,114,32,108,101,118,101,108,32,111,114,32,48,44)
+_lg_t[432]=string.char(10,9,9,84,105,101,114,32,61,32,100,117,110,103,101,111,110,80,114,101,115,101,116,46,84,105,101,114,32,111,114,32,48,44,10,9,9,80,114,105,118,97,116,101,32,61,32,116,114,117,101,44,10,9,9,69,97,115,116,101,114,32,61,32,102,97,108,115,101,44,10,9,125,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,99,114)
+_lg_t[433]=string.char(101,97,116,101,76,111,98,98,121,40,100,117,110,103,101,111,110,80,114,101,115,101,116,41,10,9,108,111,99,97,108,32,100,117,110,103,101,111,110,44,32,108,101,118,101,108,32,61,32,103,101,116,66,101,115,116,85,110,108,111,99,107,101,100,68,117,110,103,101,111,110,40,41,10,9,100,117,110,103,101,111,110,80,114,101,115,101,116,32,61,32,100,117,110,103,101)
+_lg_t[434]=string.char(111,110,80,114,101,115,101,116,32,111,114,32,100,117,110,103,101,111,110,10,9,108,111,99,97,108,32,99,114,101,97,116,101,76,111,98,98,121,82,101,109,111,116,101,32,61,32,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,67,114,101,97,116,101,76,111,98,98,121,34,41,10,9,108,111,99,97,108,32,108,97,115,116,82,101,115,117,108,116,10,10,9)
+_lg_t[435]=string.char(102,111,114,32,95,44,32,109,97,112,78,97,109,101,32,105,110,32,105,112,97,105,114,115,40,103,101,116,68,117,110,103,101,111,110,77,97,112,65,116,116,101,109,112,116,115,40,100,117,110,103,101,111,110,80,114,101,115,101,116,46,77,97,112,41,41,32,100,111,10,9,9,108,97,115,116,82,101,115,117,108,116,32,61,32,105,110,118,111,107,101,82,101,109,111,116)
+_lg_t[436]=string.char(101,40,99,114,101,97,116,101,76,111,98,98,121,82,101,109,111,116,101,44,32,109,97,107,101,67,114,101,97,116,101,76,111,98,98,121,80,97,121,108,111,97,100,40,100,117,110,103,101,111,110,80,114,101,115,101,116,44,32,109,97,112,78,97,109,101,44,32,108,101,118,101,108,41,41,10,10,9,9,105,102,32,108,97,115,116,82,101,115,117,108,116,32,116,104,101)
+_lg_t[437]=string.char(110,10,9,9,9,114,101,116,117,114,110,32,108,97,115,116,82,101,115,117,108,116,10,9,9,101,110,100,10,10,9,9,116,97,115,107,46,119,97,105,116,40,48,46,50,53,41,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,108,97,115,116,82,101,115,117,108,116,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,116,97)
+_lg_t[438]=string.char(114,116,76,111,98,98,121,40,41,10,9,114,101,116,117,114,110,32,102,105,114,101,82,101,109,111,116,101,40,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,83,116,97,114,116,76,111,98,98,121,34,41,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,116,97,114,116,76,111,98,98,121,66,117,114,115,116,40,41,10)
+_lg_t[439]=string.char(9,102,111,114,32,97,116,116,101,109,112,116,32,61,32,49,44,32,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,65,116,116,101,109,112,116,115,32,100,111,10,9,9,115,116,97,114,116,76,111,98,98,121,40,41,10,9,9,116,97,115,107,46,119,97,105,116,40,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116)
+_lg_t[440]=string.char(97,114,116,82,101,116,114,121,68,101,108,97,121,41,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,116,97,114,116,68,117,110,103,101,111,110,40,41,10,9,114,101,116,117,114,110,32,102,105,114,101,82,101,109,111,116,101,40,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,83,116,97,114,116,68,117)
+_lg_t[441]=string.char(110,103,101,111,110,34,41,44,32,123,32,116,114,117,101,32,125,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,116,97,114,116,68,117,110,103,101,111,110,66,117,114,115,116,40,41,10,9,102,111,114,32,97,116,116,101,109,112,116,32,61,32,49,44,32,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97)
+_lg_t[442]=string.char(114,116,65,116,116,101,109,112,116,115,32,100,111,10,9,9,115,116,97,114,116,68,117,110,103,101,111,110,40,41,10,9,9,116,97,115,107,46,119,97,105,116,40,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,41,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99)
+_lg_t[443]=string.char(116,105,111,110,32,99,114,101,97,116,101,65,110,100,83,116,97,114,116,68,117,110,103,101,111,110,40,41,10,9,105,102,32,100,117,110,103,101,111,110,70,108,111,119,82,117,110,110,105,110,103,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,100,117,110,103,101,111,110,70,108,111,119,82,117,110,110,105,110,103,32,61,32,116,114)
+_lg_t[444]=string.char(117,101,10,9,116,97,115,107,46,115,112,97,119,110,40,102,117,110,99,116,105,111,110,40,41,10,9,9,108,111,99,97,108,32,99,97,110,67,114,101,97,116,101,76,111,98,98,121,32,61,32,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,67,114,101,97,116,101,76,111,98,98,121,34,41,32,126,61,32,110,105,108,10,9,9,108,111,99,97,108,32,99)
+_lg_t[445]=string.char(97,110,83,116,97,114,116,76,111,98,98,121,32,61,32,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,83,116,97,114,116,76,111,98,98,121,34,41,32,126,61,32,110,105,108,10,10,9,9,105,102,32,99,97,110,67,114,101,97,116,101,76,111,98,98,121,32,97,110,100,32,99,97,110,83,116,97,114,116,76,111,98,98,121,32,116,104,101,110,10,9,9)
+_lg_t[446]=string.char(9,108,111,99,97,108,32,100,117,110,103,101,111,110,44,32,108,101,118,101,108,32,61,32,103,101,116,66,101,115,116,85,110,108,111,99,107,101,100,68,117,110,103,101,111,110,40,41,10,10,9,9,9,105,102,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,65,102,116,101,114,82,117,110,32,116,104,101,110,10,9,9,9,9,110,111,116,105,102)
+_lg_t[447]=string.char(121,40,34,65,117,116,111,32,83,101,108,108,34,44,32,34,67,104,101,99,107,105,110,103,32,105,110,118,101,110,116,111,114,121,32,98,101,102,111,114,101,32,110,101,120,116,32,114,117,110,46,34,41,10,9,9,9,9,114,117,110,65,117,116,111,83,101,108,108,40,116,114,117,101,41,10,9,9,9,9,116,97,115,107,46,119,97,105,116,40,115,101,116,116,105,110)
+_lg_t[448]=string.char(103,115,46,65,117,116,111,83,101,108,108,68,101,108,97,121,41,10,9,9,9,101,110,100,10,10,9,9,9,110,111,116,105,102,121,40,34,68,117,110,103,101,111,110,34,44,32,34,67,114,101,97,116,105,110,103,32,34,32,46,46,32,116,111,115,116,114,105,110,103,40,100,117,110,103,101,111,110,46,77,97,112,41,32,46,46,32,34,32,34,32,46,46,32,116,111)
+_lg_t[449]=string.char(115,116,114,105,110,103,40,100,117,110,103,101,111,110,46,68,105,102,102,105,99,117,108,116,121,41,32,46,46,32,34,32,102,111,114,32,108,101,118,101,108,32,34,32,46,46,32,116,111,115,116,114,105,110,103,40,108,101,118,101,108,41,32,46,46,32,34,46,34,41,10,9,9,9,99,114,101,97,116,101,76,111,98,98,121,40,100,117,110,103,101,111,110,41,10,9)
+_lg_t[450]=string.char(9,9,116,97,115,107,46,119,97,105,116,40,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,68,101,108,97,121,41,10,9,9,9,110,111,116,105,102,121,40,34,68,117,110,103,101,111,110,34,44,32,34,83,116,97,114,116,105,110,103,32,108,111,98,98,121,46,34,41,10,9,9,9,115,116,97,114,116,76,111,98,98,121,66,117,114)
+_lg_t[451]=string.char(115,116,40,41,10,9,9,101,108,115,101,105,102,32,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,83,116,97,114,116,68,117,110,103,101,111,110,34,41,32,116,104,101,110,10,9,9,9,110,111,116,105,102,121,40,34,68,117,110,103,101,111,110,34,44,32,34,83,116,97,114,116,105,110,103,32,100,117,110,103,101,111,110,32,114,117,110,46,34,41,10,9)
+_lg_t[452]=string.char(9,9,115,116,97,114,116,68,117,110,103,101,111,110,66,117,114,115,116,40,41,10,9,9,101,108,115,101,10,9,9,9,110,111,116,105,102,121,40,34,68,117,110,103,101,111,110,34,44,32,34,67,111,117,108,100,32,110,111,116,32,102,105,110,100,32,108,111,98,98,121,32,111,114,32,100,117,110,103,101,111,110,32,115,116,97,114,116,32,114,101,109,111,116,101,115)
+_lg_t[453]=string.char(46,34,41,10,9,9,101,110,100,10,10,9,9,100,117,110,103,101,111,110,70,108,111,119,82,117,110,110,105,110,103,32,61,32,102,97,108,115,101,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,69,110,101,109,105,101,115,70,111,108,100,101,114,40,41,10,9,114,101,116,117,114,110,32,87,111,114)
+_lg_t[454]=string.char(107,115,112,97,99,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,69,110,101,109,105,101,115,34,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,69,110,101,109,121,82,111,111,116,40,101,110,101,109,121,41,10,9,105,102,32,110,111,116,32,101,110,101,109,121,32,111,114,32,110,111,116,32,101,110)
+_lg_t[455]=string.char(101,109,121,46,80,97,114,101,110,116,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101,110,100,10,10,9,105,102,32,101,110,101,109,121,58,73,115,65,40,34,66,97,115,101,80,97,114,116,34,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,101,110,101,109,121,10,9,101,110,100,10,10,9,105,102,32,101,110,101,109,121)
+_lg_t[456]=string.char(58,73,115,65,40,34,77,111,100,101,108,34,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,101,110,101,109,121,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,72,117,109,97,110,111,105,100,82,111,111,116,80,97,114,116,34,41,10,9,9,9,111,114,32,101,110,101,109,121,46,80,114,105,109,97,114,121,80,97,114,116,10,9,9,9)
+_lg_t[457]=string.char(111,114,32,101,110,101,109,121,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,87,104,105,99,104,73,115,65,40,34,66,97,115,101,80,97,114,116,34,44,32,116,114,117,101,41,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,101,110,101,109,121,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,87,104,105,99,104,73,115,65,40,34,66,97)
+_lg_t[458]=string.char(115,101,80,97,114,116,34,44,32,116,114,117,101,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,69,110,101,109,121,72,117,109,97,110,111,105,100,40,101,110,101,109,121,41,10,9,105,102,32,110,111,116,32,101,110,101,109,121,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101,110,100,10)
+_lg_t[459]=string.char(10,9,114,101,116,117,114,110,32,101,110,101,109,121,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,79,102,67,108,97,115,115,40,34,72,117,109,97,110,111,105,100,34,41,32,111,114,32,101,110,101,109,121,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,72,117,109,97,110,111,105,100,34,44,32,116,114,117,101,41,10,101,110,100,10,10)
+_lg_t[460]=string.char(108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,78,117,109,98,101,114,86,97,108,117,101,40,99,111,110,116,97,105,110,101,114,44,32,110,97,109,101,115,41,10,9,105,102,32,110,111,116,32,99,111,110,116,97,105,110,101,114,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101,110,100,10,10,9,102,111,114,32,95)
+_lg_t[461]=string.char(44,32,110,97,109,101,32,105,110,32,105,112,97,105,114,115,40,110,97,109,101,115,41,32,100,111,10,9,9,108,111,99,97,108,32,97,116,116,114,105,98,117,116,101,32,61,32,99,111,110,116,97,105,110,101,114,58,71,101,116,65,116,116,114,105,98,117,116,101,40,110,97,109,101,41,10,9,9,105,102,32,116,121,112,101,111,102,40,97,116,116,114,105,98,117,116)
+_lg_t[462]=string.char(101,41,32,61,61,32,34,110,117,109,98,101,114,34,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,97,116,116,114,105,98,117,116,101,10,9,9,101,110,100,10,10,9,9,108,111,99,97,108,32,118,97,108,117,101,79,98,106,101,99,116,32,61,32,99,111,110,116,97,105,110,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,110,97)
+_lg_t[463]=string.char(109,101,44,32,116,114,117,101,41,10,9,9,105,102,32,118,97,108,117,101,79,98,106,101,99,116,32,97,110,100,32,40,118,97,108,117,101,79,98,106,101,99,116,58,73,115,65,40,34,78,117,109,98,101,114,86,97,108,117,101,34,41,32,111,114,32,118,97,108,117,101,79,98,106,101,99,116,58,73,115,65,40,34,73,110,116,86,97,108,117,101,34,41,41,32,116)
+_lg_t[464]=string.char(104,101,110,10,9,9,9,114,101,116,117,114,110,32,118,97,108,117,101,79,98,106,101,99,116,46,86,97,108,117,101,10,9,9,101,110,100,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,83,116,114,105,110,103,86,97,108,117,101,40,99,111,110,116,97,105,110,101,114,44,32,110,97,109,101,115,41,10)
+_lg_t[465]=string.char(9,105,102,32,110,111,116,32,99,111,110,116,97,105,110,101,114,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101,110,100,10,10,9,102,111,114,32,95,44,32,110,97,109,101,32,105,110,32,105,112,97,105,114,115,40,110,97,109,101,115,41,32,100,111,10,9,9,108,111,99,97,108,32,97,116,116,114,105,98,117,116,101,32,61,32,99)
+_lg_t[466]=string.char(111,110,116,97,105,110,101,114,58,71,101,116,65,116,116,114,105,98,117,116,101,40,110,97,109,101,41,10,9,9,105,102,32,116,121,112,101,111,102,40,97,116,116,114,105,98,117,116,101,41,32,61,61,32,34,115,116,114,105,110,103,34,32,97,110,100,32,97,116,116,114,105,98,117,116,101,32,126,61,32,34,34,32,116,104,101,110,10,9,9,9,114,101,116,117,114)
+_lg_t[467]=string.char(110,32,97,116,116,114,105,98,117,116,101,10,9,9,101,110,100,10,10,9,9,108,111,99,97,108,32,118,97,108,117,101,79,98,106,101,99,116,32,61,32,99,111,110,116,97,105,110,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,110,97,109,101,44,32,116,114,117,101,41,10,9,9,105,102,32,118,97,108,117,101,79,98,106,101,99,116,32,97)
+_lg_t[468]=string.char(110,100,32,118,97,108,117,101,79,98,106,101,99,116,58,73,115,65,40,34,83,116,114,105,110,103,86,97,108,117,101,34,41,32,97,110,100,32,118,97,108,117,101,79,98,106,101,99,116,46,86,97,108,117,101,32,126,61,32,34,34,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,118,97,108,117,101,79,98,106,101,99,116,46,86,97,108,117,101,10,9)
+_lg_t[469]=string.char(9,101,110,100,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,80,108,97,121,101,114,68,97,116,97,70,111,108,100,101,114,40,41,10,9,114,101,116,117,114,110,32,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,100,97,116,97,34,41,32,111,114,32,112,108,97)
+_lg_t[470]=string.char(121,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,68,97,116,97,34,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,78,117,109,98,101,114,70,114,111,109,86,97,108,117,101,79,98,106,101,99,116,40,118,97,108,117,101,79,98,106,101,99,116,41,10,9,105,102,32,110,111,116,32,118,97,108)
+_lg_t[471]=string.char(117,101,79,98,106,101,99,116,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101,110,100,10,10,9,105,102,32,118,97,108,117,101,79,98,106,101,99,116,58,73,115,65,40,34,78,117,109,98,101,114,86,97,108,117,101,34,41,32,111,114,32,118,97,108,117,101,79,98,106,101,99,116,58,73,115,65,40,34,73,110,116,86,97,108,117,101)
+_lg_t[472]=string.char(34,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,118,97,108,117,101,79,98,106,101,99,116,46,86,97,108,117,101,10,9,101,110,100,10,10,9,105,102,32,118,97,108,117,101,79,98,106,101,99,116,58,73,115,65,40,34,83,116,114,105,110,103,86,97,108,117,101,34,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,116,111,110,117,109,98)
+_lg_t[473]=string.char(101,114,40,118,97,108,117,101,79,98,106,101,99,116,46,86,97,108,117,101,41,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,80,108,97,121,101,114,76,101,118,101,108,86,97,108,117,101,79,98,106,101,99,116,40,41,10,9,108,111,99,97,108,32,100,97,116,97,70,111,108,100,101,114,32,61,32,103)
+_lg_t[474]=string.char(101,116,80,108,97,121,101,114,68,97,116,97,70,111,108,100,101,114,40,41,10,9,105,102,32,110,111,116,32,100,97,116,97,70,111,108,100,101,114,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101,110,100,10,10,9,108,111,99,97,108,32,118,97,108,117,101,79,98,106,101,99,116,32,61,32,100,97,116,97,70,111,108,100,101,114,58)
+_lg_t[475]=string.char(70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,108,101,118,101,108,34,41,32,111,114,32,100,97,116,97,70,111,108,100,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,76,101,118,101,108,34,41,10,9,105,102,32,118,97,108,117,101,79,98,106,101,99,116,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,118,97,108,117)
+_lg_t[476]=string.char(101,79,98,106,101,99,116,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,99,111,112,121,68,117,110,103,101,111,110,80,114,101,115,101,116,40,112,114,101,115,101,116,41,10,9,114,101,116,117,114,110,32,123,10,9,9,77,97,112,32,61,32,112,114,101,115,101,116,46,77,97,112,44,10,9,9,68,105,102,102,105)
+_lg_t[477]=string.char(99,117,108,116,121,32,61,32,112,114,101,115,101,116,46,68,105,102,102,105,99,117,108,116,121,44,10,9,9,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,112,114,101,115,101,116,46,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,44,10,9,9,84,105,101,114,32,61,32,112,114,101,115,101,116,46,84,105,101,114,44,10,9)
+_lg_t[478]=string.char(125,10,101,110,100,10,10,103,101,116,80,108,97,121,101,114,76,101,118,101,108,32,61,32,102,117,110,99,116,105,111,110,40,41,10,9,108,111,99,97,108,32,100,105,114,101,99,116,76,101,118,101,108,32,61,32,103,101,116,78,117,109,98,101,114,70,114,111,109,86,97,108,117,101,79,98,106,101,99,116,40,103,101,116,80,108,97,121,101,114,76,101,118,101,108,86)
+_lg_t[479]=string.char(97,108,117,101,79,98,106,101,99,116,40,41,41,10,9,105,102,32,100,105,114,101,99,116,76,101,118,101,108,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,109,97,116,104,46,102,108,111,111,114,40,100,105,114,101,99,116,76,101,118,101,108,41,10,9,101,110,100,10,10,9,108,111,99,97,108,32,99,111,110,116,97,105,110,101,114,115,32,61,32,123,10)
+_lg_t[480]=string.char(9,9,103,101,116,80,108,97,121,101,114,68,97,116,97,70,111,108,100,101,114,40,41,44,10,9,9,112,108,97,121,101,114,44,10,9,9,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,108,101,97,100,101,114,115,116,97,116,115,34,41,44,10,9,9,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105)
+_lg_t[481]=string.char(108,100,40,34,83,116,97,116,115,34,41,44,10,9,9,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,68,97,116,97,34,41,44,10,9,9,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,100,97,116,97,34,41,44,10,9,9,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115)
+_lg_t[482]=string.char(116,67,104,105,108,100,40,34,80,108,97,121,101,114,68,97,116,97,34,41,44,10,9,125,10,10,9,102,111,114,32,95,44,32,99,111,110,116,97,105,110,101,114,32,105,110,32,105,112,97,105,114,115,40,99,111,110,116,97,105,110,101,114,115,41,32,100,111,10,9,9,108,111,99,97,108,32,108,101,118,101,108,32,61,32,103,101,116,78,117,109,98,101,114,86,97)
+_lg_t[483]=string.char(108,117,101,40,99,111,110,116,97,105,110,101,114,44,32,123,10,9,9,9,34,108,101,118,101,108,34,44,10,9,9,9,34,76,101,118,101,108,34,44,10,9,9,9,34,76,118,108,34,44,10,9,9,9,34,80,108,97,121,101,114,76,101,118,101,108,34,44,10,9,9,9,34,67,117,114,114,101,110,116,76,101,118,101,108,34,44,10,9,9,125,41,10,10,9,9)
+_lg_t[484]=string.char(105,102,32,108,101,118,101,108,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,109,97,116,104,46,102,108,111,111,114,40,108,101,118,101,108,41,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,48,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,97,100,100,68,117,110,103,101,111,110,80,114)
+_lg_t[485]=string.char(101,115,101,116,70,114,111,109,79,98,106,101,99,116,40,111,98,106,101,99,116,44,32,112,114,101,115,101,116,115,41,10,9,105,102,32,110,111,116,32,111,98,106,101,99,116,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,108,111,99,97,108,32,109,97,112,78,97,109,101,32,61,32,103,101,116,83,116,114,105,110,103,86,97,108)
+_lg_t[486]=string.char(117,101,40,111,98,106,101,99,116,44,32,123,10,9,9,34,77,97,112,34,44,10,9,9,34,77,97,112,78,97,109,101,34,44,10,9,9,34,68,117,110,103,101,111,110,34,44,10,9,9,34,68,117,110,103,101,111,110,78,97,109,101,34,44,10,9,125,41,10,10,9,108,111,99,97,108,32,108,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32)
+_lg_t[487]=string.char(103,101,116,78,117,109,98,101,114,86,97,108,117,101,40,111,98,106,101,99,116,44,32,123,10,9,9,34,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,34,44,10,9,9,34,82,101,113,117,105,114,101,100,76,101,118,101,108,34,44,10,9,9,34,76,101,118,101,108,82,101,113,34,44,10,9,9,34,77,105,110,76,101,118,101,108,34,44,10,9,125)
+_lg_t[488]=string.char(41,10,10,9,108,111,99,97,108,32,116,105,101,114,32,61,32,103,101,116,78,117,109,98,101,114,86,97,108,117,101,40,111,98,106,101,99,116,44,32,123,32,34,84,105,101,114,34,32,125,41,10,9,108,111,99,97,108,32,100,105,102,102,105,99,117,108,116,121,32,61,32,103,101,116,83,116,114,105,110,103,86,97,108,117,101,40,111,98,106,101,99,116,44,32,123)
+_lg_t[489]=string.char(32,34,68,105,102,102,105,99,117,108,116,121,34,32,125,41,10,10,9,105,102,32,110,111,116,32,109,97,112,78,97,109,101,32,97,110,100,32,110,111,116,32,108,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,109,97,112,78,97,109,101,32,61,32,109,97,112,78,97,109)
+_lg_t[490]=string.char(101,32,111,114,32,111,98,106,101,99,116,46,78,97,109,101,10,10,9,105,102,32,109,97,112,78,97,109,101,32,97,110,100,32,109,97,112,78,97,109,101,32,126,61,32,34,34,32,116,104,101,110,10,9,9,116,97,98,108,101,46,105,110,115,101,114,116,40,112,114,101,115,101,116,115,44,32,123,10,9,9,9,77,97,112,32,61,32,109,97,112,78,97,109,101,44)
+_lg_t[491]=string.char(10,9,9,9,68,105,102,102,105,99,117,108,116,121,32,61,32,100,105,102,102,105,99,117,108,116,121,32,111,114,32,34,67,97,108,97,109,105,116,121,34,44,10,9,9,9,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,61,32,108,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,111,114,32,48,44,10,9,9,9,84,105,101,114,32)
+_lg_t[492]=string.char(61,32,116,105,101,114,32,111,114,32,48,44,10,9,9,125,41,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,68,117,110,103,101,111,110,80,114,101,115,101,116,115,40,41,10,9,108,111,99,97,108,32,112,114,101,115,101,116,115,32,61,32,123,125,10,10,9,102,111,114,32,95,44,32,112,114,101,115)
+_lg_t[493]=string.char(101,116,32,105,110,32,105,112,97,105,114,115,40,115,116,97,116,105,99,68,117,110,103,101,111,110,80,114,101,115,101,116,115,41,32,100,111,10,9,9,116,97,98,108,101,46,105,110,115,101,114,116,40,112,114,101,115,101,116,115,44,32,99,111,112,121,68,117,110,103,101,111,110,80,114,101,115,101,116,40,112,114,101,115,101,116,41,41,10,9,101,110,100,10,10,9)
+_lg_t[494]=string.char(116,97,98,108,101,46,115,111,114,116,40,112,114,101,115,101,116,115,44,32,102,117,110,99,116,105,111,110,40,108,101,102,116,44,32,114,105,103,104,116,41,10,9,9,114,101,116,117,114,110,32,40,108,101,102,116,46,76,101,118,101,108,82,101,113,117,105,114,101,109,101,110,116,32,111,114,32,48,41,32,60,32,40,114,105,103,104,116,46,76,101,118,101,108,82,101)
+_lg_t[495]=string.char(113,117,105,114,101,109,101,110,116,32,111,114,32,48,41,10,9,101,110,100,41,10,10,9,114,101,116,117,114,110,32,112,114,101,115,101,116,115,10,101,110,100,10,10,103,101,116,66,101,115,116,85,110,108,111,99,107,101,100,68,117,110,103,101,111,110,32,61,32,102,117,110,99,116,105,111,110,40,41,10,9,108,111,99,97,108,32,108,101,118,101,108,32,61,32,103)
+_lg_t[496]=string.char(101,116,80,108,97,121,101,114,76,101,118,101,108,40,41,10,9,108,111,99,97,108,32,112,114,101,115,101,116,115,32,61,32,103,101,116,68,117,110,103,101,111,110,80,114,101,115,101,116,115,40,41,10,9,108,111,99,97,108,32,98,101,115,116,32,61,32,112,114,101,115,101,116,115,91,49,93,32,111,114,32,99,111,112,121,68,117,110,103,101,111,110,80,114,101,115)
+_lg_t[497]=string.char(101,116,40,115,116,97,116,105,99,68,117,110,103,101,111,110,80,114,101,115,101,116,115,91,49,93,41,10,10,9,102,111,114,32,95,44,32,112,114,101,115,101,116,32,105,110,32,105,112,97,105,114,115,40,112,114,101,115,101,116,115,41,32,100,111,10,9,9,105,102,32,108,101,118,101,108,32,62,61,32,40,112,114,101,115,101,116,46,76,101,118,101,108,82,101,113)
+_lg_t[498]=string.char(117,105,114,101,109,101,110,116,32,111,114,32,48,41,32,116,104,101,110,10,9,9,9,98,101,115,116,32,61,32,112,114,101,115,101,116,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,98,101,115,116,44,32,108,101,118,101,108,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,80,108,97,121)
+_lg_t[499]=string.char(101,114,73,110,102,111,67,111,110,116,101,110,116,40,41,10,9,108,111,99,97,108,32,108,101,118,101,108,80,97,116,104,32,61,32,34,102,97,108,108,98,97,99,107,32,115,99,97,110,34,10,9,108,111,99,97,108,32,100,117,110,103,101,111,110,44,32,108,101,118,101,108,32,61,32,103,101,116,66,101,115,116,85,110,108,111,99,107,101,100,68,117,110,103,101,111)
+_lg_t[500]=string.char(110,40,41,10,10,9,105,102,32,103,101,116,80,108,97,121,101,114,76,101,118,101,108,86,97,108,117,101,79,98,106,101,99,116,40,41,32,116,104,101,110,10,9,9,108,101,118,101,108,80,97,116,104,32,61,32,34,80,108,97,121,101,114,115,32,62,32,34,32,46,46,32,112,108,97,121,101,114,46,78,97,109,101,32,46,46,32,34,32,62,32,100,97,116,97,32)
+_lg_t[501]=string.char(62,32,108,101,118,101,108,34,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,34,85,115,101,114,58,32,34,32,46,46,32,112,108,97,121,101,114,46,78,97,109,101,10,9,9,46,46,32,34,92,110,76,101,118,101,108,58,32,34,32,46,46,32,116,111,115,116,114,105,110,103,40,108,101,118,101,108,41,10,9,9,46,46,32,34,92,110,66,101,115,116,32)
+_lg_t[502]=string.char(68,117,110,103,101,111,110,58,32,34,32,46,46,32,116,111,115,116,114,105,110,103,40,100,117,110,103,101,111,110,46,77,97,112,41,32,46,46,32,34,32,45,32,34,32,46,46,32,116,111,115,116,114,105,110,103,40,100,117,110,103,101,111,110,46,68,105,102,102,105,99,117,108,116,121,41,10,9,9,46,46,32,34,92,110,76,101,118,101,108,32,80,97,116,104,58)
+_lg_t[503]=string.char(32,34,32,46,46,32,108,101,118,101,108,80,97,116,104,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,117,112,100,97,116,101,80,108,97,121,101,114,73,110,102,111,68,105,115,112,108,97,121,40,41,10,9,105,102,32,110,111,116,32,112,108,97,121,101,114,73,110,102,111,80,97,114,97,103,114,97,112,104,32,116,104,101,110,10,9)
+_lg_t[504]=string.char(9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,41,10,9,9,112,108,97,121,101,114,73,110,102,111,80,97,114,97,103,114,97,112,104,58,83,101,116,40,123,10,9,9,9,84,105,116,108,101,32,61,32,34,80,108,97,121,101,114,32,73,110,102,111,34,44,10,9,9,9,67,111,110,116,101,110,116)
+_lg_t[505]=string.char(32,61,32,103,101,116,80,108,97,121,101,114,73,110,102,111,67,111,110,116,101,110,116,40,41,44,10,9,9,125,41,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,116,97,114,116,80,108,97,121,101,114,73,110,102,111,82,101,102,114,101,115,104,40,41,10,9,116,97,115,107,46,115,112,97,119,110,40,102)
+_lg_t[506]=string.char(117,110,99,116,105,111,110,40,41,10,9,9,119,104,105,108,101,32,116,97,115,107,46,119,97,105,116,40,50,41,32,100,111,10,9,9,9,117,112,100,97,116,101,80,108,97,121,101,114,73,110,102,111,68,105,115,112,108,97,121,40,41,10,9,9,101,110,100,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,114)
+_lg_t[507]=string.char(101,109,101,109,98,101,114,79,114,105,103,105,110,97,108,40,105,110,115,116,97,110,99,101,44,32,112,114,111,112,101,114,116,121,41,10,9,105,102,32,110,111,116,32,105,110,115,116,97,110,99,101,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,108,111,99,97,108,32,115,116,97,116,101,32,61,32,104,105,100,101,78,97,109,101)
+_lg_t[508]=string.char(79,114,105,103,105,110,97,108,115,91,105,110,115,116,97,110,99,101,93,10,9,105,102,32,110,111,116,32,115,116,97,116,101,32,116,104,101,110,10,9,9,115,116,97,116,101,32,61,32,123,125,10,9,9,104,105,100,101,78,97,109,101,79,114,105,103,105,110,97,108,115,91,105,110,115,116,97,110,99,101,93,32,61,32,115,116,97,116,101,10,9,101,110,100,10,10)
+_lg_t[509]=string.char(9,105,102,32,115,116,97,116,101,91,112,114,111,112,101,114,116,121,93,32,61,61,32,110,105,108,32,116,104,101,110,10,9,9,112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,41,10,9,9,9,115,116,97,116,101,91,112,114,111,112,101,114,116,121,93,32,61,32,105,110,115,116,97,110,99,101,91,112,114,111,112,101,114,116,121,93,10,9,9,101,110,100)
+_lg_t[510]=string.char(41,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,101,116,72,105,100,100,101,110,80,114,111,112,101,114,116,121,40,105,110,115,116,97,110,99,101,44,32,112,114,111,112,101,114,116,121,44,32,118,97,108,117,101,41,10,9,105,102,32,110,111,116,32,105,110,115,116,97,110,99,101,32,116,104,101,110,10,9,9)
+_lg_t[511]=string.char(114,101,116,117,114,110,10,9,101,110,100,10,10,9,114,101,109,101,109,98,101,114,79,114,105,103,105,110,97,108,40,105,110,115,116,97,110,99,101,44,32,112,114,111,112,101,114,116,121,41,10,10,9,112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,41,10,9,9,105,110,115,116,97,110,99,101,91,112,114,111,112,101,114,116,121,93,32,61,32,118,97,108)
+_lg_t[512]=string.char(117,101,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,114,101,115,116,111,114,101,72,105,100,100,101,110,78,97,109,101,79,98,106,101,99,116,115,40,41,10,9,102,111,114,32,105,110,115,116,97,110,99,101,44,32,112,114,111,112,101,114,116,105,101,115,32,105,110,32,112,97,105,114,115,40,104,105,100,101,78)
+_lg_t[513]=string.char(97,109,101,79,114,105,103,105,110,97,108,115,41,32,100,111,10,9,9,105,102,32,105,110,115,116,97,110,99,101,32,97,110,100,32,105,110,115,116,97,110,99,101,46,80,97,114,101,110,116,32,116,104,101,110,10,9,9,9,102,111,114,32,112,114,111,112,101,114,116,121,44,32,118,97,108,117,101,32,105,110,32,112,97,105,114,115,40,112,114,111,112,101,114,116,105)
+_lg_t[514]=string.char(101,115,41,32,100,111,10,9,9,9,9,112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,41,10,9,9,9,9,9,105,110,115,116,97,110,99,101,91,112,114,111,112,101,114,116,121,93,32,61,32,118,97,108,117,101,10,9,9,9,9,101,110,100,41,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97)
+_lg_t[515]=string.char(108,32,102,117,110,99,116,105,111,110,32,103,101,116,76,111,99,97,108,80,108,97,121,101,114,71,117,105,40,41,10,9,114,101,116,117,114,110,32,112,108,97,121,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,80,108,97,121,101,114,71,117,105,34,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,97,112)
+_lg_t[516]=string.char(112,108,121,80,108,97,121,101,114,68,97,116,97,78,97,109,101,72,105,100,101,114,40,41,10,9,108,111,99,97,108,32,112,108,97,121,101,114,71,117,105,32,61,32,103,101,116,76,111,99,97,108,80,108,97,121,101,114,71,117,105,40,41,10,9,108,111,99,97,108,32,112,108,97,121,101,114,68,97,116,97,32,61,32,112,108,97,121,101,114,71,117,105,32,97,110)
+_lg_t[517]=string.char(100,32,112,108,97,121,101,114,71,117,105,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,80,108,97,121,101,114,68,97,116,97,34,41,10,9,108,111,99,97,108,32,102,114,97,109,101,32,61,32,112,108,97,121,101,114,68,97,116,97,32,97,110,100,32,112,108,97,121,101,114,68,97,116,97,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100)
+_lg_t[518]=string.char(40,34,70,114,97,109,101,34,41,10,9,108,111,99,97,108,32,112,114,111,102,105,108,101,70,114,97,109,101,32,61,32,102,114,97,109,101,32,97,110,100,32,102,114,97,109,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,80,114,111,102,105,108,101,34,41,10,9,108,111,99,97,108,32,112,114,111,102,105,108,101,32,61,32,112,114,111,102,105)
+_lg_t[519]=string.char(108,101,70,114,97,109,101,32,97,110,100,32,112,114,111,102,105,108,101,70,114,97,109,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,80,114,111,102,105,108,101,34,41,10,9,108,111,99,97,108,32,112,108,97,121,101,114,78,97,109,101,32,61,32,102,114,97,109,101,32,97,110,100,32,102,114,97,109,101,58,70,105,110,100,70,105,114,115,116)
+_lg_t[520]=string.char(67,104,105,108,100,40,34,80,108,97,121,101,114,78,97,109,101,34,41,10,10,9,105,102,32,112,114,111,102,105,108,101,32,97,110,100,32,112,114,111,102,105,108,101,58,73,115,65,40,34,71,117,105,79,98,106,101,99,116,34,41,32,116,104,101,110,10,9,9,115,101,116,72,105,100,100,101,110,80,114,111,112,101,114,116,121,40,112,114,111,102,105,108,101,44,32)
+_lg_t[521]=string.char(34,86,105,115,105,98,108,101,34,44,32,102,97,108,115,101,41,10,9,101,110,100,10,10,9,105,102,32,112,108,97,121,101,114,78,97,109,101,32,97,110,100,32,40,112,108,97,121,101,114,78,97,109,101,58,73,115,65,40,34,84,101,120,116,76,97,98,101,108,34,41,32,111,114,32,112,108,97,121,101,114,78,97,109,101,58,73,115,65,40,34,84,101,120,116,66)
+_lg_t[522]=string.char(117,116,116,111,110,34,41,41,32,116,104,101,110,10,9,9,115,101,116,72,105,100,100,101,110,80,114,111,112,101,114,116,121,40,112,108,97,121,101,114,78,97,109,101,44,32,34,84,101,120,116,34,44,32,34,75,114,121,112,116,101,120,83,99,114,105,112,116,115,34,41,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110)
+_lg_t[523]=string.char(32,103,101,116,76,111,99,97,108,87,111,114,107,115,112,97,99,101,67,104,97,114,97,99,116,101,114,40,41,10,9,114,101,116,117,114,110,32,112,108,97,121,101,114,46,67,104,97,114,97,99,116,101,114,32,111,114,32,87,111,114,107,115,112,97,99,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,112,108,97,121,101,114,46,78,97,109,101,41,10)
+_lg_t[524]=string.char(101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,97,112,112,108,121,78,97,109,101,112,108,97,116,101,72,105,100,101,114,40,41,10,9,108,111,99,97,108,32,99,104,97,114,97,99,116,101,114,32,61,32,103,101,116,76,111,99,97,108,87,111,114,107,115,112,97,99,101,67,104,97,114,97,99,116,101,114,40,41,10,9,108,111,99,97,108)
+_lg_t[525]=string.char(32,114,111,111,116,32,61,32,99,104,97,114,97,99,116,101,114,32,97,110,100,32,99,104,97,114,97,99,116,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,72,117,109,97,110,111,105,100,82,111,111,116,80,97,114,116,34,41,10,9,108,111,99,97,108,32,110,97,109,101,112,108,97,116,101,32,61,32,114,111,111,116,32,97,110,100,32,114)
+_lg_t[526]=string.char(111,111,116,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,77,97,105,110,78,97,109,101,112,108,97,116,101,34,41,10,10,9,105,102,32,110,111,116,32,110,97,109,101,112,108,97,116,101,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,108,111,99,97,108,32,103,117,105,108,100,84,97,103,32,61,32,110,97,109)
+_lg_t[527]=string.char(101,112,108,97,116,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,71,117,105,108,100,116,97,103,34,44,32,116,114,117,101,41,10,9,108,111,99,97,108,32,112,108,97,121,101,114,78,97,109,101,32,61,32,110,97,109,101,112,108,97,116,101,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,80,108,97,121,101,114,78,97,109,101)
+_lg_t[528]=string.char(34,44,32,116,114,117,101,41,10,10,9,105,102,32,103,117,105,108,100,84,97,103,32,97,110,100,32,103,117,105,108,100,84,97,103,58,73,115,65,40,34,71,117,105,79,98,106,101,99,116,34,41,32,116,104,101,110,10,9,9,115,101,116,72,105,100,100,101,110,80,114,111,112,101,114,116,121,40,103,117,105,108,100,84,97,103,44,32,34,86,105,115,105,98,108,101)
+_lg_t[529]=string.char(34,44,32,102,97,108,115,101,41,10,9,101,110,100,10,10,9,105,102,32,112,108,97,121,101,114,78,97,109,101,32,97,110,100,32,112,108,97,121,101,114,78,97,109,101,58,73,115,65,40,34,71,117,105,79,98,106,101,99,116,34,41,32,116,104,101,110,10,9,9,115,101,116,72,105,100,100,101,110,80,114,111,112,101,114,116,121,40,112,108,97,121,101,114,78,97)
+_lg_t[530]=string.char(109,101,44,32,34,86,105,115,105,98,108,101,34,44,32,102,97,108,115,101,41,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,97,112,112,108,121,72,105,100,101,78,97,109,101,40,41,10,9,97,112,112,108,121,80,108,97,121,101,114,68,97,116,97,78,97,109,101,72,105,100,101,114,40,41,10,9,97,112,112,108)
+_lg_t[531]=string.char(121,78,97,109,101,112,108,97,116,101,72,105,100,101,114,40,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,101,116,72,105,100,101,78,97,109,101,40,118,97,108,117,101,41,10,9,115,101,116,116,105,110,103,115,46,72,105,100,101,78,97,109,101,32,61,32,118,97,108,117,101,10,10,9,105,102,32,118,97,108,117,101,32,116)
+_lg_t[532]=string.char(104,101,110,10,9,9,97,112,112,108,121,72,105,100,101,78,97,109,101,40,41,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,114,101,115,116,111,114,101,72,105,100,100,101,110,78,97,109,101,79,98,106,101,99,116,115,40,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,116,97,114,116,72,105,100,101,78,97)
+_lg_t[533]=string.char(109,101,76,111,111,112,40,41,10,9,105,102,32,104,105,100,101,78,97,109,101,76,111,111,112,82,117,110,110,105,110,103,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,104,105,100,101,78,97,109,101,76,111,111,112,82,117,110,110,105,110,103,32,61,32,116,114,117,101,10,10,9,116,97,115,107,46,115,112,97,119,110,40,102,117)
+_lg_t[534]=string.char(110,99,116,105,111,110,40,41,10,9,9,119,104,105,108,101,32,116,97,115,107,46,119,97,105,116,40,49,41,32,100,111,10,9,9,9,105,102,32,115,101,116,116,105,110,103,115,46,72,105,100,101,78,97,109,101,32,116,104,101,110,10,9,9,9,9,97,112,112,108,121,72,105,100,101,78,97,109,101,40,41,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9)
+_lg_t[535]=string.char(101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,67,117,114,114,101,110,116,68,117,110,103,101,111,110,77,97,112,78,97,109,101,40,41,10,9,108,111,99,97,108,32,100,117,110,103,101,111,110,83,101,116,116,105,110,103,115,32,61,32,87,111,114,107,115,112,97,99,101,58,70,105,110,100,70,105,114,115,116)
+_lg_t[536]=string.char(67,104,105,108,100,40,34,68,117,110,103,101,111,110,83,101,116,116,105,110,103,115,34,41,10,9,108,111,99,97,108,32,109,97,112,78,97,109,101,32,61,32,103,101,116,83,116,114,105,110,103,86,97,108,117,101,40,100,117,110,103,101,111,110,83,101,116,116,105,110,103,115,44,32,123,10,9,9,34,77,97,112,34,44,10,9,9,34,77,97,112,78,97,109,101,34)
+_lg_t[537]=string.char(44,10,9,9,34,68,117,110,103,101,111,110,34,44,10,9,9,34,68,117,110,103,101,111,110,78,97,109,101,34,44,10,9,9,34,67,117,114,114,101,110,116,77,97,112,34,44,10,9,9,34,83,101,115,115,105,111,110,78,97,109,101,34,44,10,9,125,41,10,10,9,105,102,32,109,97,112,78,97,109,101,32,97,110,100,32,109,97,112,78,97,109,101,32,126,61)
+_lg_t[538]=string.char(32,34,34,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,109,97,112,78,97,109,101,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,105,115,67,117,114,114,101,110,116,68,117,110,103,101,111,110,77,97,112,40,109,97,112,78,97,109,101,41,10,9,108,111,99,97,108,32,99,117,114,114,101,110,116,77,97)
+_lg_t[539]=string.char(112,32,61,32,103,101,116,67,117,114,114,101,110,116,68,117,110,103,101,111,110,77,97,112,78,97,109,101,40,41,10,9,114,101,116,117,114,110,32,99,117,114,114,101,110,116,77,97,112,32,97,110,100,32,115,116,114,105,110,103,46,108,111,119,101,114,40,99,117,114,114,101,110,116,77,97,112,41,58,102,105,110,100,40,115,116,114,105,110,103,46,108,111,119,101,114)
+_lg_t[540]=string.char(40,109,97,112,78,97,109,101,41,44,32,49,44,32,116,114,117,101,41,32,126,61,32,110,105,108,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,82,97,119,69,110,101,109,121,72,101,97,108,116,104,40,101,110,101,109,121,41,10,9,108,111,99,97,108,32,104,117,109,97,110,111,105,100,32,61,32,103,101,116,69,110,101)
+_lg_t[541]=string.char(109,121,72,117,109,97,110,111,105,100,40,101,110,101,109,121,41,10,9,105,102,32,104,117,109,97,110,111,105,100,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,104,117,109,97,110,111,105,100,46,72,101,97,108,116,104,10,9,101,110,100,10,10,9,108,111,99,97,108,32,104,101,97,108,116,104,32,61,32,103,101,116,78,117,109,98,101,114,86,97,108,117)
+_lg_t[542]=string.char(101,40,101,110,101,109,121,44,32,123,32,34,72,101,97,108,116,104,34,44,32,34,72,80,34,44,32,34,67,117,114,114,101,110,116,72,101,97,108,116,104,34,32,125,41,10,9,105,102,32,104,101,97,108,116,104,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,104,101,97,108,116,104,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117)
+_lg_t[543]=string.char(110,99,116,105,111,110,32,103,101,116,69,110,101,109,121,72,101,97,108,116,104,40,101,110,101,109,121,41,10,9,108,111,99,97,108,32,104,101,97,108,116,104,32,61,32,103,101,116,82,97,119,69,110,101,109,121,72,101,97,108,116,104,40,101,110,101,109,121,41,10,9,105,102,32,104,101,97,108,116,104,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,104)
+_lg_t[544]=string.char(101,97,108,116,104,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,49,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,105,115,69,110,101,109,121,65,108,105,118,101,40,101,110,101,109,121,41,10,9,108,111,99,97,108,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,61,32,103,101,116,69,110,101,109,105,101,115,70)
+_lg_t[545]=string.char(111,108,100,101,114,40,41,10,9,105,102,32,110,111,116,32,101,110,101,109,121,32,111,114,32,110,111,116,32,101,110,101,109,121,46,80,97,114,101,110,116,32,111,114,32,110,111,116,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,111,114,32,110,111,116,32,101,110,101,109,121,58,73,115,68,101,115,99,101,110,100,97,110,116,79,102,40,101,110,101,109,105)
+_lg_t[546]=string.char(101,115,70,111,108,100,101,114,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,105,102,32,101,110,101,109,121,58,71,101,116,65,116,116,114,105,98,117,116,101,40,34,68,101,97,100,34,41,32,61,61,32,116,114,117,101,32,111,114,32,101,110,101,109,121,58,71,101,116,65,116,116,114,105,98,117,116,101)
+_lg_t[547]=string.char(40,34,68,101,102,101,97,116,101,100,34,41,32,61,61,32,116,114,117,101,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,103,101,116,69,110,101,109,121,82,111,111,116,40,101,110,101,109,121,41,32,126,61,32,110,105,108,32,97,110,100,32,103,101,116,69,110,101,109,121,72,101)
+_lg_t[548]=string.char(97,108,116,104,40,101,110,101,109,121,41,32,62,32,48,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,101,110,101,109,121,78,97,109,101,67,111,110,116,97,105,110,115,40,101,110,101,109,121,44,32,110,97,109,101,80,97,114,116,41,10,9,114,101,116,117,114,110,32,101,110,101,109,121,32,97,110,100,32,115,116,114,105,110,103,46)
+_lg_t[549]=string.char(102,105,110,100,40,115,116,114,105,110,103,46,108,111,119,101,114,40,101,110,101,109,121,46,78,97,109,101,32,111,114,32,34,34,41,44,32,115,116,114,105,110,103,46,108,111,119,101,114,40,110,97,109,101,80,97,114,116,41,44,32,49,44,32,116,114,117,101,41,32,126,61,32,110,105,108,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110)
+_lg_t[550]=string.char(32,102,105,110,100,65,108,105,118,101,69,110,101,109,121,66,121,78,97,109,101,40,110,97,109,101,80,97,114,116,44,32,105,110,99,108,117,100,101,68,101,115,99,101,110,100,97,110,116,115,41,10,9,108,111,99,97,108,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,61,32,103,101,116,69,110,101,109,105,101,115,70,111,108,100,101,114,40,41,10,9,105)
+_lg_t[551]=string.char(102,32,110,111,116,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101,110,100,10,10,9,108,111,99,97,108,32,108,105,115,116,32,61,32,105,110,99,108,117,100,101,68,101,115,99,101,110,100,97,110,116,115,32,97,110,100,32,101,110,101,109,105,101,115,70,111,108,100,101,114,58,71)
+_lg_t[552]=string.char(101,116,68,101,115,99,101,110,100,97,110,116,115,40,41,32,111,114,32,101,110,101,109,105,101,115,70,111,108,100,101,114,58,71,101,116,67,104,105,108,100,114,101,110,40,41,10,10,9,102,111,114,32,95,44,32,101,110,101,109,121,32,105,110,32,105,112,97,105,114,115,40,108,105,115,116,41,32,100,111,10,9,9,105,102,32,101,110,101,109,121,78,97,109,101,67)
+_lg_t[553]=string.char(111,110,116,97,105,110,115,40,101,110,101,109,121,44,32,110,97,109,101,80,97,114,116,41,32,97,110,100,32,105,115,69,110,101,109,121,65,108,105,118,101,40,101,110,101,109,121,41,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,101,110,101,109,121,10,9,9,101,110,100,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99)
+_lg_t[554]=string.char(116,105,111,110,32,105,115,69,110,101,109,121,83,116,105,108,108,80,114,101,115,101,110,116,65,110,100,78,111,116,68,101,97,100,40,101,110,101,109,121,41,10,9,108,111,99,97,108,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,61,32,103,101,116,69,110,101,109,105,101,115,70,111,108,100,101,114,40,41,10,10,9,105,102,32,110,111,116,32,101,110,101)
+_lg_t[555]=string.char(109,121,32,111,114,32,110,111,116,32,101,110,101,109,121,46,80,97,114,101,110,116,32,111,114,32,110,111,116,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,111,114,32,110,111,116,32,101,110,101,109,121,58,73,115,68,101,115,99,101,110,100,97,110,116,79,102,40,101,110,101,109,105,101,115,70,111,108,100,101,114,41,32,116,104,101,110,10,9,9,114,101)
+_lg_t[556]=string.char(116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,105,102,32,101,110,101,109,121,58,71,101,116,65,116,116,114,105,98,117,116,101,40,34,68,101,97,100,34,41,32,61,61,32,116,114,117,101,32,111,114,32,101,110,101,109,121,58,71,101,116,65,116,116,114,105,98,117,116,101,40,34,68,101,102,101,97,116,101,100,34,41,32,61,61,32,116,114,117)
+_lg_t[557]=string.char(101,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,108,111,99,97,108,32,104,101,97,108,116,104,32,61,32,103,101,116,82,97,119,69,110,101,109,121,72,101,97,108,116,104,40,101,110,101,109,121,41,10,9,105,102,32,104,101,97,108,116,104,32,126,61,32,110,105,108,32,97,110,100,32,104,101,97,108,116)
+_lg_t[558]=string.char(104,32,60,61,32,48,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,116,114,117,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,102,105,110,100,80,114,101,115,101,110,116,69,110,101,109,121,66,121,78,97,109,101,40,110,97,109,101,80,97,114)
+_lg_t[559]=string.char(116,44,32,105,110,99,108,117,100,101,68,101,115,99,101,110,100,97,110,116,115,41,10,9,108,111,99,97,108,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,61,32,103,101,116,69,110,101,109,105,101,115,70,111,108,100,101,114,40,41,10,9,105,102,32,110,111,116,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,116,104,101,110,10,9,9,114,101)
+_lg_t[560]=string.char(116,117,114,110,32,110,105,108,10,9,101,110,100,10,10,9,108,111,99,97,108,32,108,105,115,116,32,61,32,105,110,99,108,117,100,101,68,101,115,99,101,110,100,97,110,116,115,32,97,110,100,32,101,110,101,109,105,101,115,70,111,108,100,101,114,58,71,101,116,68,101,115,99,101,110,100,97,110,116,115,40,41,32,111,114,32,101,110,101,109,105,101,115,70,111,108)
+_lg_t[561]=string.char(100,101,114,58,71,101,116,67,104,105,108,100,114,101,110,40,41,10,10,9,102,111,114,32,95,44,32,101,110,101,109,121,32,105,110,32,105,112,97,105,114,115,40,108,105,115,116,41,32,100,111,10,9,9,105,102,32,101,110,101,109,121,78,97,109,101,67,111,110,116,97,105,110,115,40,101,110,101,109,121,44,32,110,97,109,101,80,97,114,116,41,32,97,110,100,32)
+_lg_t[562]=string.char(105,115,69,110,101,109,121,83,116,105,108,108,80,114,101,115,101,110,116,65,110,100,78,111,116,68,101,97,100,40,101,110,101,109,121,41,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,101,110,101,109,121,10,9,9,101,110,100,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,105,114,115,116,83,97,110,99,116,117,97,114,121,70,105)
+_lg_t[563]=string.char(110,97,108,78,97,109,101,115,32,61,32,123,10,9,34,104,111,108,121,32,103,114,97,105,108,34,44,10,9,34,103,114,97,105,108,32,97,114,109,34,44,10,9,34,115,104,105,101,108,100,32,97,114,109,34,44,10,9,34,115,116,97,102,102,32,97,114,109,34,44,10,9,34,115,119,111,114,100,32,97,114,109,34,44,10,9,34,121,97,108,100,97,98,97,111,116)
+_lg_t[564]=string.char(104,34,44,10,125,10,10,108,111,99,97,108,32,102,105,114,115,116,83,97,110,99,116,117,97,114,121,65,114,109,79,114,100,101,114,32,61,32,123,10,9,34,71,114,97,105,108,32,65,114,109,34,44,10,9,34,83,104,105,101,108,100,32,65,114,109,34,44,10,9,34,83,116,97,102,102,32,65,114,109,34,44,10,9,34,83,119,111,114,100,32,65,114,109,34,44)
+_lg_t[565]=string.char(10,125,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,105,115,70,105,114,115,116,83,97,110,99,116,117,97,114,121,70,105,110,97,108,69,110,101,109,121,40,101,110,101,109,121,41,10,9,108,111,99,97,108,32,101,110,101,109,121,78,97,109,101,32,61,32,115,116,114,105,110,103,46,108,111,119,101,114,40,101,110,101,109,121,46,78,97,109,101,32)
+_lg_t[566]=string.char(111,114,32,34,34,41,10,10,9,102,111,114,32,95,44,32,110,97,109,101,32,105,110,32,105,112,97,105,114,115,40,102,105,114,115,116,83,97,110,99,116,117,97,114,121,70,105,110,97,108,78,97,109,101,115,41,32,100,111,10,9,9,105,102,32,115,116,114,105,110,103,46,102,105,110,100,40,101,110,101,109,121,78,97,109,101,44,32,110,97,109,101,44,32,49,44)
+_lg_t[567]=string.char(32,116,114,117,101,41,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,116,114,117,101,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,102,97,108,115,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,84,104,117,110,100,101,114,105,110,103,80,101,97,107,115,80,114,105,111,114)
+_lg_t[568]=string.char(105,116,121,69,110,101,109,121,40,41,10,9,108,111,99,97,108,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,61,32,103,101,116,69,110,101,109,105,101,115,70,111,108,100,101,114,40,41,10,9,105,102,32,110,111,116,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101,110)
+_lg_t[569]=string.char(100,10,10,9,108,111,99,97,108,32,98,101,115,116,84,97,114,103,101,116,10,9,108,111,99,97,108,32,98,101,115,116,68,101,112,116,104,32,61,32,109,97,116,104,46,104,117,103,101,10,10,9,102,111,114,32,95,44,32,101,110,101,109,121,32,105,110,32,105,112,97,105,114,115,40,101,110,101,109,105,101,115,70,111,108,100,101,114,58,71,101,116,68,101,115,99)
+_lg_t[570]=string.char(101,110,100,97,110,116,115,40,41,41,32,100,111,10,9,9,108,111,99,97,108,32,101,110,101,109,121,78,97,109,101,32,61,32,115,116,114,105,110,103,46,108,111,119,101,114,40,101,110,101,109,121,46,78,97,109,101,32,111,114,32,34,34,41,10,10,9,9,105,102,32,40,115,116,114,105,110,103,46,102,105,110,100,40,101,110,101,109,121,78,97,109,101,44,32,34)
+_lg_t[571]=string.char(112,111,119,101,114,101,100,32,115,116,97,116,117,101,32,111,102,32,98,114,97,118,101,114,121,34,44,32,49,44,32,116,114,117,101,41,10,9,9,9,111,114,32,115,116,114,105,110,103,46,102,105,110,100,40,101,110,101,109,121,78,97,109,101,44,32,34,112,111,119,101,114,101,100,32,115,116,97,116,117,101,32,111,102,32,102,105,100,101,108,105,116,121,34,44,32)
+_lg_t[572]=string.char(49,44,32,116,114,117,101,41,41,10,9,9,9,97,110,100,32,105,115,69,110,101,109,121,65,108,105,118,101,40,101,110,101,109,121,41,10,9,9,116,104,101,110,10,9,9,9,108,111,99,97,108,32,100,101,112,116,104,32,61,32,48,10,9,9,9,108,111,99,97,108,32,112,97,114,101,110,116,32,61,32,101,110,101,109,121,46,80,97,114,101,110,116,10,10,9)
+_lg_t[573]=string.char(9,9,119,104,105,108,101,32,112,97,114,101,110,116,32,97,110,100,32,112,97,114,101,110,116,32,126,61,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,100,111,10,9,9,9,9,100,101,112,116,104,32,61,32,100,101,112,116,104,32,43,32,49,10,9,9,9,9,112,97,114,101,110,116,32,61,32,112,97,114,101,110,116,46,80,97,114,101,110,116,10,9)
+_lg_t[574]=string.char(9,9,101,110,100,10,10,9,9,9,105,102,32,110,111,116,32,98,101,115,116,84,97,114,103,101,116,32,111,114,32,100,101,112,116,104,32,60,32,98,101,115,116,68,101,112,116,104,32,116,104,101,110,10,9,9,9,9,98,101,115,116,84,97,114,103,101,116,32,61,32,101,110,101,109,121,10,9,9,9,9,98,101,115,116,68,101,112,116,104,32,61,32,100,101,112)
+_lg_t[575]=string.char(116,104,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,98,101,115,116,84,97,114,103,101,116,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,78,101,97,114,101,115,116,65,108,105,118,101,69,110,101,109,121,40,41,10,9,108,111,99,97,108,32,101,110,101,109,105)
+_lg_t[576]=string.char(101,115,70,111,108,100,101,114,32,61,32,103,101,116,69,110,101,109,105,101,115,70,111,108,100,101,114,40,41,10,9,105,102,32,110,111,116,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101,110,100,10,10,9,108,111,99,97,108,32,114,111,111,116,32,61,32,103,101,116,82,111,111)
+_lg_t[577]=string.char(116,40,41,10,9,108,111,99,97,108,32,110,101,97,114,101,115,116,10,9,108,111,99,97,108,32,110,101,97,114,101,115,116,68,105,115,116,97,110,99,101,32,61,32,109,97,116,104,46,104,117,103,101,10,10,9,102,111,114,32,95,44,32,101,110,101,109,121,32,105,110,32,105,112,97,105,114,115,40,101,110,101,109,105,101,115,70,111,108,100,101,114,58,71,101,116)
+_lg_t[578]=string.char(67,104,105,108,100,114,101,110,40,41,41,32,100,111,10,9,9,105,102,32,105,115,69,110,101,109,121,65,108,105,118,101,40,101,110,101,109,121,41,32,116,104,101,110,10,9,9,9,108,111,99,97,108,32,101,110,101,109,121,82,111,111,116,32,61,32,103,101,116,69,110,101,109,121,82,111,111,116,40,101,110,101,109,121,41,10,9,9,9,108,111,99,97,108,32,100)
+_lg_t[579]=string.char(105,115,116,97,110,99,101,32,61,32,40,114,111,111,116,46,80,111,115,105,116,105,111,110,32,45,32,101,110,101,109,121,82,111,111,116,46,80,111,115,105,116,105,111,110,41,46,77,97,103,110,105,116,117,100,101,10,10,9,9,9,105,102,32,100,105,115,116,97,110,99,101,32,60,32,110,101,97,114,101,115,116,68,105,115,116,97,110,99,101,32,116,104,101,110,10)
+_lg_t[580]=string.char(9,9,9,9,110,101,97,114,101,115,116,68,105,115,116,97,110,99,101,32,61,32,100,105,115,116,97,110,99,101,10,9,9,9,9,110,101,97,114,101,115,116,32,61,32,101,110,101,109,121,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,110,101,97,114,101,115,116,10,101,110,100,10,10,108,111,99,97,108)
+_lg_t[581]=string.char(32,102,117,110,99,116,105,111,110,32,103,101,116,78,101,97,114,101,115,116,65,108,105,118,101,78,111,114,109,97,108,69,110,101,109,121,40,41,10,9,108,111,99,97,108,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,61,32,103,101,116,69,110,101,109,105,101,115,70,111,108,100,101,114,40,41,10,9,105,102,32,110,111,116,32,101,110,101,109,105,101,115)
+_lg_t[582]=string.char(70,111,108,100,101,114,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101,110,100,10,10,9,108,111,99,97,108,32,114,111,111,116,32,61,32,103,101,116,82,111,111,116,40,41,10,9,108,111,99,97,108,32,110,101,97,114,101,115,116,10,9,108,111,99,97,108,32,110,101,97,114,101,115,116,68,105,115,116,97,110,99,101,32,61,32,109)
+_lg_t[583]=string.char(97,116,104,46,104,117,103,101,10,10,9,102,111,114,32,95,44,32,101,110,101,109,121,32,105,110,32,105,112,97,105,114,115,40,101,110,101,109,105,101,115,70,111,108,100,101,114,58,71,101,116,67,104,105,108,100,114,101,110,40,41,41,32,100,111,10,9,9,105,102,32,105,115,69,110,101,109,121,65,108,105,118,101,40,101,110,101,109,121,41,32,97,110,100,32,110)
+_lg_t[584]=string.char(111,116,32,105,115,70,105,114,115,116,83,97,110,99,116,117,97,114,121,70,105,110,97,108,69,110,101,109,121,40,101,110,101,109,121,41,32,116,104,101,110,10,9,9,9,108,111,99,97,108,32,101,110,101,109,121,82,111,111,116,32,61,32,103,101,116,69,110,101,109,121,82,111,111,116,40,101,110,101,109,121,41,10,9,9,9,108,111,99,97,108,32,100,105,115,116)
+_lg_t[585]=string.char(97,110,99,101,32,61,32,40,114,111,111,116,46,80,111,115,105,116,105,111,110,32,45,32,101,110,101,109,121,82,111,111,116,46,80,111,115,105,116,105,111,110,41,46,77,97,103,110,105,116,117,100,101,10,10,9,9,9,105,102,32,100,105,115,116,97,110,99,101,32,60,32,110,101,97,114,101,115,116,68,105,115,116,97,110,99,101,32,116,104,101,110,10,9,9,9)
+_lg_t[586]=string.char(9,110,101,97,114,101,115,116,68,105,115,116,97,110,99,101,32,61,32,100,105,115,116,97,110,99,101,10,9,9,9,9,110,101,97,114,101,115,116,32,61,32,101,110,101,109,121,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,110,101,97,114,101,115,116,10,101,110,100,10,10,108,111,99,97,108,32,102,117)
+_lg_t[587]=string.char(110,99,116,105,111,110,32,103,101,116,70,105,114,115,116,83,97,110,99,116,117,97,114,121,70,105,110,97,108,80,114,105,111,114,105,116,121,69,110,101,109,121,40,41,10,9,105,102,32,110,111,116,32,103,114,97,105,108,65,114,101,110,97,84,101,108,101,112,111,114,116,68,111,110,101,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,105,108,10,9,101)
+_lg_t[588]=string.char(110,100,10,10,9,105,102,32,102,105,110,97,108,66,111,115,115,65,116,116,97,99,107,76,111,99,107,32,97,110,100,32,105,115,69,110,101,109,121,83,116,105,108,108,80,114,101,115,101,110,116,65,110,100,78,111,116,68,101,97,100,40,102,105,110,97,108,66,111,115,115,65,116,116,97,99,107,76,111,99,107,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110)
+_lg_t[589]=string.char(32,102,105,110,97,108,66,111,115,115,65,116,116,97,99,107,76,111,99,107,10,9,101,110,100,10,10,9,102,105,110,97,108,66,111,115,115,65,116,116,97,99,107,76,111,99,107,32,61,32,110,105,108,10,10,9,108,111,99,97,108,32,110,111,114,109,97,108,69,110,101,109,121,32,61,32,103,101,116,78,101,97,114,101,115,116,65,108,105,118,101,78,111,114,109,97)
+_lg_t[590]=string.char(108,69,110,101,109,121,40,41,10,9,105,102,32,110,111,114,109,97,108,69,110,101,109,121,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,110,111,114,109,97,108,69,110,101,109,121,10,9,101,110,100,10,10,9,108,111,99,97,108,32,104,111,108,121,71,114,97,105,108,32,61,32,102,105,110,100,65,108,105,118,101,69,110,101,109,121,66,121,78,97,109,101)
+_lg_t[591]=string.char(40,34,72,111,108,121,32,71,114,97,105,108,34,44,32,116,114,117,101,41,10,9,105,102,32,104,111,108,121,71,114,97,105,108,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,104,111,108,121,71,114,97,105,108,10,9,101,110,100,10,10,9,102,111,114,32,95,44,32,97,114,109,78,97,109,101,32,105,110,32,105,112,97,105,114,115,40,102,105,114,115,116)
+_lg_t[592]=string.char(83,97,110,99,116,117,97,114,121,65,114,109,79,114,100,101,114,41,32,100,111,10,9,9,108,111,99,97,108,32,97,114,109,32,61,32,102,105,110,100,65,108,105,118,101,69,110,101,109,121,66,121,78,97,109,101,40,97,114,109,78,97,109,101,44,32,116,114,117,101,41,10,9,9,105,102,32,97,114,109,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32)
+_lg_t[593]=string.char(97,114,109,10,9,9,101,110,100,10,9,101,110,100,10,10,9,108,111,99,97,108,32,121,97,108,100,97,98,97,111,116,104,32,61,32,102,105,110,100,65,108,105,118,101,69,110,101,109,121,66,121,78,97,109,101,40,34,89,97,108,100,97,98,97,111,116,104,34,44,32,116,114,117,101,41,32,111,114,32,102,105,110,100,80,114,101,115,101,110,116,69,110,101,109,121)
+_lg_t[594]=string.char(66,121,78,97,109,101,40,34,89,97,108,100,97,98,97,111,116,104,34,44,32,116,114,117,101,41,10,9,105,102,32,121,97,108,100,97,98,97,111,116,104,32,116,104,101,110,10,9,9,102,105,110,97,108,66,111,115,115,65,116,116,97,99,107,76,111,99,107,32,61,32,121,97,108,100,97,98,97,111,116,104,10,9,9,114,101,116,117,114,110,32,102,105,110,97,108)
+_lg_t[595]=string.char(66,111,115,115,65,116,116,97,99,107,76,111,99,107,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,104,97,115,70,105,110,97,108,66,111,115,115,65,116,116,97,99,107,76,111,99,107,40,41,10,9,105,102,32,102,105,110,97,108,66,111,115,115,65,116,116,97,99,107,76,111,99,107,32,97,110,100,32,105,115,69)
+_lg_t[596]=string.char(110,101,109,121,83,116,105,108,108,80,114,101,115,101,110,116,65,110,100,78,111,116,68,101,97,100,40,102,105,110,97,108,66,111,115,115,65,116,116,97,99,107,76,111,99,107,41,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,116,114,117,101,10,9,101,110,100,10,10,9,102,105,110,97,108,66,111,115,115,65,116,116,97,99,107,76,111,99,107,32,61,32)
+_lg_t[597]=string.char(110,105,108,10,9,114,101,116,117,114,110,32,102,97,108,115,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,104,97,115,65,108,105,118,101,69,110,101,109,105,101,115,40,41,10,9,108,111,99,97,108,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,61,32,103,101,116,69,110,101,109,105,101,115,70,111,108,100,101,114,40)
+_lg_t[598]=string.char(41,10,9,105,102,32,110,111,116,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,102,111,114,32,95,44,32,101,110,101,109,121,32,105,110,32,105,112,97,105,114,115,40,101,110,101,109,105,101,115,70,111,108,100,101,114,58,71,101,116,67,104,105,108,100)
+_lg_t[599]=string.char(114,101,110,40,41,41,32,100,111,10,9,9,105,102,32,105,115,69,110,101,109,121,65,108,105,118,101,40,101,110,101,109,121,41,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,116,114,117,101,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,102,97,108,115,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99)
+_lg_t[600]=string.char(116,105,111,110,32,103,101,116,76,111,99,107,101,100,69,110,101,109,121,40,41,10,9,108,111,99,97,108,32,102,105,114,115,116,83,97,110,99,116,117,97,114,121,84,97,114,103,101,116,32,61,32,103,101,116,70,105,114,115,116,83,97,110,99,116,117,97,114,121,70,105,110,97,108,80,114,105,111,114,105,116,121,69,110,101,109,121,40,41,10,9,105,102,32,102,105)
+_lg_t[601]=string.char(114,115,116,83,97,110,99,116,117,97,114,121,84,97,114,103,101,116,32,116,104,101,110,10,9,9,99,117,114,114,101,110,116,69,110,101,109,121,32,61,32,102,105,114,115,116,83,97,110,99,116,117,97,114,121,84,97,114,103,101,116,10,9,9,114,101,116,117,114,110,32,99,117,114,114,101,110,116,69,110,101,109,121,10,9,101,110,100,10,10,9,108,111,99,97,108)
+_lg_t[602]=string.char(32,112,114,105,111,114,105,116,121,69,110,101,109,121,32,61,32,103,101,116,84,104,117,110,100,101,114,105,110,103,80,101,97,107,115,80,114,105,111,114,105,116,121,69,110,101,109,121,40,41,10,9,105,102,32,112,114,105,111,114,105,116,121,69,110,101,109,121,32,116,104,101,110,10,9,9,99,117,114,114,101,110,116,69,110,101,109,121,32,61,32,112,114,105,111,114)
+_lg_t[603]=string.char(105,116,121,69,110,101,109,121,10,9,9,114,101,116,117,114,110,32,99,117,114,114,101,110,116,69,110,101,109,121,10,9,101,110,100,10,10,9,105,102,32,99,117,114,114,101,110,116,69,110,101,109,121,32,97,110,100,32,105,115,69,110,101,109,121,65,108,105,118,101,40,99,117,114,114,101,110,116,69,110,101,109,121,41,32,116,104,101,110,10,9,9,114,101,116,117)
+_lg_t[604]=string.char(114,110,32,99,117,114,114,101,110,116,69,110,101,109,121,10,9,101,110,100,10,10,9,99,117,114,114,101,110,116,69,110,101,109,121,32,61,32,103,101,116,78,101,97,114,101,115,116,65,108,105,118,101,69,110,101,109,121,40,41,10,9,114,101,116,117,114,110,32,99,117,114,114,101,110,116,69,110,101,109,121,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110)
+_lg_t[605]=string.char(99,116,105,111,110,32,103,101,116,90,117,114,105,101,108,69,110,101,109,121,40,41,10,9,108,111,99,97,108,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,61,32,103,101,116,69,110,101,109,105,101,115,70,111,108,100,101,114,40,41,10,9,105,102,32,110,111,116,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,116,104,101,110,10,9,9,114,101)
+_lg_t[606]=string.char(116,117,114,110,32,110,105,108,10,9,101,110,100,10,10,9,102,111,114,32,95,44,32,101,110,101,109,121,32,105,110,32,105,112,97,105,114,115,40,101,110,101,109,105,101,115,70,111,108,100,101,114,58,71,101,116,67,104,105,108,100,114,101,110,40,41,41,32,100,111,10,9,9,105,102,32,115,116,114,105,110,103,46,102,105,110,100,40,115,116,114,105,110,103,46,108)
+_lg_t[607]=string.char(111,119,101,114,40,101,110,101,109,121,46,78,97,109,101,41,44,32,34,122,117,114,105,101,108,34,44,32,49,44,32,116,114,117,101,41,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,101,110,101,109,121,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,110,105,108,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110)
+_lg_t[608]=string.char(99,116,105,111,110,32,103,101,116,69,112,104,114,97,116,104,69,110,101,109,121,40,41,10,9,114,101,116,117,114,110,32,102,105,110,100,65,108,105,118,101,69,110,101,109,121,66,121,78,97,109,101,40,34,69,112,104,114,97,116,104,34,44,32,116,114,117,101,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,116,101,108,101,112,111)
+_lg_t[609]=string.char(114,116,84,111,67,70,114,97,109,101,40,99,102,114,97,109,101,41,10,9,108,111,99,97,108,32,114,111,111,116,32,61,32,103,101,116,82,111,111,116,40,41,10,9,114,111,111,116,46,65,115,115,101,109,98,108,121,76,105,110,101,97,114,86,101,108,111,99,105,116,121,32,61,32,86,101,99,116,111,114,51,46,122,101,114,111,10,9,114,111,111,116,46,65,115,115)
+_lg_t[610]=string.char(101,109,98,108,121,65,110,103,117,108,97,114,86,101,108,111,99,105,116,121,32,61,32,86,101,99,116,111,114,51,46,122,101,114,111,10,9,114,111,111,116,46,67,70,114,97,109,101,32,61,32,99,102,114,97,109,101,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,116,101,108,101,112,111,114,116,84,111,90,117,114,105,101,108,67,108)
+_lg_t[611]=string.char(101,97,114,80,111,115,105,116,105,111,110,40,41,10,9,116,101,108,101,112,111,114,116,84,111,67,70,114,97,109,101,40,67,70,114,97,109,101,46,110,101,119,40,90,85,82,73,69,76,95,67,76,69,65,82,95,80,79,83,73,84,73,79,78,41,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,117,112,100,97,116,101,90,117,114)
+_lg_t[612]=string.char(105,101,108,67,108,101,97,114,84,101,108,101,112,111,114,116,40,41,10,9,108,111,99,97,108,32,122,117,114,105,101,108,32,61,32,103,101,116,90,117,114,105,101,108,69,110,101,109,121,40,41,10,9,108,111,99,97,108,32,122,117,114,105,101,108,65,108,105,118,101,32,61,32,122,117,114,105,101,108,32,97,110,100,32,105,115,69,110,101,109,121,65,108,105,118,101)
+_lg_t[613]=string.char(40,122,117,114,105,101,108,41,10,10,9,105,102,32,122,117,114,105,101,108,65,108,105,118,101,32,116,104,101,110,10,9,9,122,117,114,105,101,108,83,101,101,110,65,108,105,118,101,32,61,32,116,114,117,101,10,9,9,122,117,114,105,101,108,84,101,108,101,112,111,114,116,68,111,110,101,32,61,32,102,97,108,115,101,10,9,101,108,115,101,105,102,32,40,122,117)
+_lg_t[614]=string.char(114,105,101,108,83,101,101,110,65,108,105,118,101,32,111,114,32,122,117,114,105,101,108,41,32,97,110,100,32,110,111,116,32,122,117,114,105,101,108,84,101,108,101,112,111,114,116,68,111,110,101,32,116,104,101,110,10,9,9,116,101,108,101,112,111,114,116,84,111,90,117,114,105,101,108,67,108,101,97,114,80,111,115,105,116,105,111,110,40,41,10,9,9,122,117,114)
+_lg_t[615]=string.char(105,101,108,84,101,108,101,112,111,114,116,68,111,110,101,32,61,32,116,114,117,101,10,9,9,122,117,114,105,101,108,83,101,101,110,65,108,105,118,101,32,61,32,102,97,108,115,101,10,9,9,110,111,116,105,102,121,40,34,70,105,114,115,116,32,66,111,115,115,34,44,32,34,90,117,114,105,101,108,32,99,108,101,97,114,101,100,46,32,84,101,108,101,112,111,114)
+_lg_t[616]=string.char(116,101,100,32,116,111,32,110,101,120,116,32,112,111,115,105,116,105,111,110,46,34,41,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,117,112,100,97,116,101,69,112,104,114,97,116,104,65,110,100,71,114,97,105,108,70,108,111,119,40,41,10,9,108,111,99,97,108,32,101,112,104,114,97,116,104,32,61,32,103,101)
+_lg_t[617]=string.char(116,69,112,104,114,97,116,104,69,110,101,109,121,40,41,10,10,9,105,102,32,101,112,104,114,97,116,104,32,116,104,101,110,10,9,9,101,112,104,114,97,116,104,83,101,101,110,65,108,105,118,101,32,61,32,116,114,117,101,10,9,9,101,112,104,114,97,116,104,84,101,108,101,112,111,114,116,68,111,110,101,32,61,32,102,97,108,115,101,10,9,9,114,101,116,117)
+_lg_t[618]=string.char(114,110,10,9,101,110,100,10,10,9,105,102,32,101,112,104,114,97,116,104,83,101,101,110,65,108,105,118,101,32,97,110,100,32,110,111,116,32,101,112,104,114,97,116,104,84,101,108,101,112,111,114,116,68,111,110,101,32,116,104,101,110,10,9,9,116,101,108,101,112,111,114,116,84,111,67,70,114,97,109,101,40,69,80,72,82,65,84,72,95,67,76,69,65,82,95)
+_lg_t[619]=string.char(67,70,82,65,77,69,41,10,9,9,101,112,104,114,97,116,104,84,101,108,101,112,111,114,116,68,111,110,101,32,61,32,116,114,117,101,10,9,9,101,112,104,114,97,116,104,84,101,108,101,112,111,114,116,65,116,32,61,32,111,115,46,99,108,111,99,107,40,41,10,9,9,99,117,114,114,101,110,116,69,110,101,109,121,32,61,32,110,105,108,10,9,9,110,111,116)
+_lg_t[620]=string.char(105,102,121,40,34,83,101,99,111,110,100,32,66,111,115,115,34,44,32,34,69,112,104,114,97,116,104,32,99,108,101,97,114,101,100,46,32,84,101,108,101,112,111,114,116,101,100,32,116,111,32,110,101,120,116,32,112,111,115,105,116,105,111,110,46,34,41,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,105,102,32,101,112,104,114,97,116,104,84,101)
+_lg_t[621]=string.char(108,101,112,111,114,116,68,111,110,101,10,9,9,97,110,100,32,110,111,116,32,103,114,97,105,108,65,114,101,110,97,84,101,108,101,112,111,114,116,68,111,110,101,10,9,9,97,110,100,32,111,115,46,99,108,111,99,107,40,41,32,45,32,101,112,104,114,97,116,104,84,101,108,101,112,111,114,116,65,116,32,62,61,32,49,46,53,10,9,9,97,110,100,32,110,111)
+_lg_t[622]=string.char(116,32,103,101,116,78,101,97,114,101,115,116,65,108,105,118,101,78,111,114,109,97,108,69,110,101,109,121,40,41,10,9,116,104,101,110,10,9,9,116,101,108,101,112,111,114,116,84,111,67,70,114,97,109,101,40,71,82,65,73,76,95,65,82,69,78,65,95,67,70,82,65,77,69,41,10,9,9,103,114,97,105,108,65,114,101,110,97,84,101,108,101,112,111,114,116)
+_lg_t[623]=string.char(68,111,110,101,32,61,32,116,114,117,101,10,9,9,99,117,114,114,101,110,116,69,110,101,109,121,32,61,32,110,105,108,10,9,9,110,111,116,105,102,121,40,34,70,105,110,97,108,32,66,111,115,115,34,44,32,34,69,110,101,109,121,32,119,97,118,101,32,99,108,101,97,114,101,100,46,32,84,101,108,101,112,111,114,116,101,100,32,116,111,32,71,114,97,105,108)
+_lg_t[624]=string.char(32,97,114,101,110,97,46,34,41,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,116,97,114,116,90,117,114,105,101,108,87,97,116,99,104,76,111,111,112,40,41,10,9,105,102,32,122,117,114,105,101,108,87,97,116,99,104,76,111,111,112,82,117,110,110,105,110,103,32,116,104,101,110,10,9,9,114,101,116,117)
+_lg_t[625]=string.char(114,110,10,9,101,110,100,10,10,9,122,117,114,105,101,108,87,97,116,99,104,76,111,111,112,82,117,110,110,105,110,103,32,61,32,116,114,117,101,10,10,9,116,97,115,107,46,115,112,97,119,110,40,102,117,110,99,116,105,111,110,40,41,10,9,9,119,104,105,108,101,32,97,117,116,111,70,97,114,109,32,100,111,10,9,9,9,117,112,100,97,116,101,90,117,114)
+_lg_t[626]=string.char(105,101,108,67,108,101,97,114,84,101,108,101,112,111,114,116,40,41,10,9,9,9,117,112,100,97,116,101,69,112,104,114,97,116,104,65,110,100,71,114,97,105,108,70,108,111,119,40,41,10,9,9,9,116,97,115,107,46,119,97,105,116,40,48,46,50,53,41,10,9,9,101,110,100,10,10,9,9,122,117,114,105,101,108,87,97,116,99,104,76,111,111,112,82,117,110)
+_lg_t[627]=string.char(110,105,110,103,32,61,32,102,97,108,115,101,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,111,114,98,105,116,69,110,101,109,121,40,101,110,101,109,121,41,10,9,108,111,99,97,108,32,101,110,101,109,121,82,111,111,116,32,61,32,103,101,116,69,110,101,109,121,82,111,111,116,40,101,110,101,109,121,41,10)
+_lg_t[628]=string.char(9,105,102,32,110,111,116,32,101,110,101,109,121,82,111,111,116,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,108,111,99,97,108,32,114,111,111,116,32,61,32,103,101,116,82,111,111,116,40,41,10,9,108,111,99,97,108,32,97,110,103,108,101,32,61,32,111,115,46,99,108,111,99,107,40,41,32,42,32,115,101,116,116,105,110)
+_lg_t[629]=string.char(103,115,46,79,114,98,105,116,83,112,101,101,100,10,9,108,111,99,97,108,32,111,102,102,115,101,116,32,61,32,86,101,99,116,111,114,51,46,110,101,119,40,10,9,9,109,97,116,104,46,99,111,115,40,97,110,103,108,101,41,32,42,32,115,101,116,116,105,110,103,115,46,79,114,98,105,116,68,105,115,116,97,110,99,101,44,10,9,9,115,101,116,116,105,110,103)
+_lg_t[630]=string.char(115,46,79,114,98,105,116,72,101,105,103,104,116,44,10,9,9,109,97,116,104,46,115,105,110,40,97,110,103,108,101,41,32,42,32,115,101,116,116,105,110,103,115,46,79,114,98,105,116,68,105,115,116,97,110,99,101,10,9,41,10,10,9,114,111,111,116,46,67,70,114,97,109,101,32,61,32,67,70,114,97,109,101,46,108,111,111,107,65,116,40,101,110,101,109,121)
+_lg_t[631]=string.char(82,111,111,116,46,80,111,115,105,116,105,111,110,32,43,32,111,102,102,115,101,116,44,32,101,110,101,109,121,82,111,111,116,46,80,111,115,105,116,105,111,110,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,99,97,115,116,70,97,114,109,67,121,99,108,101,40,41,10,9,117,115,101,66,111,108,116,40,41,10,9,116,97,115,107)
+_lg_t[632]=string.char(46,119,97,105,116,40,115,101,116,116,105,110,103,115,46,67,97,115,116,68,101,108,97,121,41,10,9,117,115,101,83,112,101,108,108,40,34,81,34,41,10,9,116,97,115,107,46,119,97,105,116,40,115,101,116,116,105,110,103,115,46,67,97,115,116,68,101,108,97,121,41,10,9,117,115,101,83,112,101,108,108,40,34,69,34,41,10,9,116,97,115,107,46,119,97,105)
+_lg_t[633]=string.char(116,40,115,101,116,116,105,110,103,115,46,67,97,115,116,68,101,108,97,121,41,10,9,117,115,101,83,112,101,108,108,40,34,82,34,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,116,97,114,116,79,114,98,105,116,40,41,10,9,105,102,32,111,114,98,105,116,67,111,110,110,101,99,116,105,111,110,32,116,104,101,110,10,9)
+_lg_t[634]=string.char(9,111,114,98,105,116,67,111,110,110,101,99,116,105,111,110,58,68,105,115,99,111,110,110,101,99,116,40,41,10,9,101,110,100,10,10,9,111,114,98,105,116,67,111,110,110,101,99,116,105,111,110,32,61,32,82,117,110,83,101,114,118,105,99,101,46,72,101,97,114,116,98,101,97,116,58,67,111,110,110,101,99,116,40,102,117,110,99,116,105,111,110,40,41,10,9)
+_lg_t[635]=string.char(9,105,102,32,110,111,116,32,97,117,116,111,70,97,114,109,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,10,9,9,101,110,100,10,10,9,9,108,111,99,97,108,32,101,110,101,109,121,32,61,32,103,101,116,76,111,99,107,101,100,69,110,101,109,121,40,41,10,9,9,105,102,32,101,110,101,109,121,32,116,104,101,110,10,9,9,9,111,114,98,105,116)
+_lg_t[636]=string.char(69,110,101,109,121,40,101,110,101,109,121,41,10,9,9,101,110,100,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,116,111,112,79,114,98,105,116,40,41,10,9,105,102,32,111,114,98,105,116,67,111,110,110,101,99,116,105,111,110,32,116,104,101,110,10,9,9,111,114,98,105,116,67,111,110,110,101,99,116)
+_lg_t[637]=string.char(105,111,110,58,68,105,115,99,111,110,110,101,99,116,40,41,10,9,9,111,114,98,105,116,67,111,110,110,101,99,116,105,111,110,32,61,32,110,105,108,10,9,101,110,100,10,10,9,99,117,114,114,101,110,116,69,110,101,109,121,32,61,32,110,105,108,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,116,97,114,116,65,116,116,97)
+_lg_t[638]=string.char(99,107,76,111,111,112,40,41,10,9,105,102,32,97,116,116,97,99,107,76,111,111,112,82,117,110,110,105,110,103,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,97,116,116,97,99,107,76,111,111,112,82,117,110,110,105,110,103,32,61,32,116,114,117,101,10,10,9,116,97,115,107,46,115,112,97,119,110,40,102,117,110,99,116,105)
+_lg_t[639]=string.char(111,110,40,41,10,9,9,119,104,105,108,101,32,97,117,116,111,70,97,114,109,32,100,111,10,9,9,9,108,111,99,97,108,32,101,110,101,109,121,32,61,32,103,101,116,76,111,99,107,101,100,69,110,101,109,121,40,41,10,10,9,9,9,105,102,32,115,101,116,116,105,110,103,115,46,65,117,116,111,67,97,115,116,32,97,110,100,32,40,101,110,101,109,121,32,111)
+_lg_t[640]=string.char(114,32,104,97,115,70,105,110,97,108,66,111,115,115,65,116,116,97,99,107,76,111,99,107,40,41,41,32,116,104,101,110,10,9,9,9,9,99,97,115,116,70,97,114,109,67,121,99,108,101,40,41,10,9,9,9,101,108,115,101,10,9,9,9,9,116,97,115,107,46,119,97,105,116,40,48,46,50,41,10,9,9,9,101,110,100,10,10,9,9,9,105,102,32,99,117)
+_lg_t[641]=string.char(114,114,101,110,116,69,110,101,109,121,32,97,110,100,32,110,111,116,32,105,115,69,110,101,109,121,65,108,105,118,101,40,99,117,114,114,101,110,116,69,110,101,109,121,41,32,116,104,101,110,10,9,9,9,9,99,117,114,114,101,110,116,69,110,101,109,121,32,61,32,110,105,108,10,9,9,9,101,110,100,10,9,9,101,110,100,10,10,9,9,97,116,116,97,99,107)
+_lg_t[642]=string.char(76,111,111,112,82,117,110,110,105,110,103,32,61,32,102,97,108,115,101,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,116,97,114,116,85,116,105,108,105,116,121,76,111,111,112,40,41,10,9,105,102,32,117,116,105,108,105,116,121,76,111,111,112,82,117,110,110,105,110,103,32,116,104,101,110,10,9,9,114)
+_lg_t[643]=string.char(101,116,117,114,110,10,9,101,110,100,10,10,9,117,116,105,108,105,116,121,76,111,111,112,82,117,110,110,105,110,103,32,61,32,116,114,117,101,10,10,9,116,97,115,107,46,115,112,97,119,110,40,102,117,110,99,116,105,111,110,40,41,10,9,9,119,104,105,108,101,32,97,117,116,111,70,97,114,109,32,100,111,10,9,9,9,108,111,99,97,108,32,110,111,119,32)
+_lg_t[644]=string.char(61,32,111,115,46,99,108,111,99,107,40,41,10,10,9,9,9,105,102,32,115,101,116,116,105,110,103,115,46,65,117,116,111,69,113,117,105,112,66,101,115,116,32,97,110,100,32,110,111,119,32,45,32,108,97,115,116,69,113,117,105,112,66,101,115,116,32,62,61,32,115,101,116,116,105,110,103,115,46,69,113,117,105,112,66,101,115,116,68,101,108,97,121,32,116,104)
+_lg_t[645]=string.char(101,110,10,9,9,9,9,101,113,117,105,112,66,101,115,116,40,41,10,9,9,9,9,108,97,115,116,69,113,117,105,112,66,101,115,116,32,61,32,110,111,119,10,9,9,9,101,110,100,10,10,9,9,9,105,102,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83,107,105,108,108,80,111,105,110,116,115,32,97,110,100,32,110,111,119,32,45,32,108,97,115,116)
+_lg_t[646]=string.char(83,107,105,108,108,80,111,105,110,116,32,62,61,32,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,68,101,108,97,121,32,116,104,101,110,10,9,9,9,9,97,100,100,83,107,105,108,108,80,111,105,110,116,115,40,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,84,121,112,101,44,32,115,101,116,116,105,110,103,115)
+_lg_t[647]=string.char(46,83,107,105,108,108,80,111,105,110,116,65,109,111,117,110,116,41,10,9,9,9,9,108,97,115,116,83,107,105,108,108,80,111,105,110,116,32,61,32,110,111,119,10,9,9,9,101,110,100,10,10,9,9,9,116,97,115,107,46,119,97,105,116,40,48,46,50,53,41,10,9,9,101,110,100,10,10,9,9,117,116,105,108,105,116,121,76,111,111,112,82,117,110,110,105)
+_lg_t[648]=string.char(110,103,32,61,32,102,97,108,115,101,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,101,116,65,117,116,111,70,97,114,109,40,118,97,108,117,101,41,10,9,97,117,116,111,70,97,114,109,32,61,32,118,97,108,117,101,10,10,9,105,102,32,97,117,116,111,70,97,114,109,32,116,104,101,110,10,9,9,99)
+_lg_t[649]=string.char(117,114,114,101,110,116,69,110,101,109,121,32,61,32,110,105,108,10,9,9,108,97,115,116,69,113,117,105,112,66,101,115,116,32,61,32,48,10,9,9,108,97,115,116,83,107,105,108,108,80,111,105,110,116,32,61,32,48,10,9,9,122,117,114,105,101,108,83,101,101,110,65,108,105,118,101,32,61,32,102,97,108,115,101,10,9,9,122,117,114,105,101,108,84,101,108)
+_lg_t[650]=string.char(101,112,111,114,116,68,111,110,101,32,61,32,102,97,108,115,101,10,9,9,101,112,104,114,97,116,104,83,101,101,110,65,108,105,118,101,32,61,32,102,97,108,115,101,10,9,9,101,112,104,114,97,116,104,84,101,108,101,112,111,114,116,68,111,110,101,32,61,32,102,97,108,115,101,10,9,9,101,112,104,114,97,116,104,84,101,108,101,112,111,114,116,65,116,32,61)
+_lg_t[651]=string.char(32,48,10,9,9,103,114,97,105,108,65,114,101,110,97,84,101,108,101,112,111,114,116,68,111,110,101,32,61,32,102,97,108,115,101,10,9,9,102,105,110,97,108,66,111,115,115,65,116,116,97,99,107,76,111,99,107,32,61,32,110,105,108,10,10,9,9,108,111,99,97,108,32,99,97,110,85,115,101,76,111,98,98,121,32,61,32,114,101,115,111,108,118,101,82,101)
+_lg_t[652]=string.char(109,111,116,101,40,34,67,114,101,97,116,101,76,111,98,98,121,34,41,32,126,61,32,110,105,108,32,97,110,100,32,114,101,115,111,108,118,101,82,101,109,111,116,101,40,34,83,116,97,114,116,76,111,98,98,121,34,41,32,126,61,32,110,105,108,10,10,9,9,105,102,32,115,101,116,116,105,110,103,115,46,65,117,116,111,67,114,101,97,116,101,65,110,100,83,116)
+_lg_t[653]=string.char(97,114,116,68,117,110,103,101,111,110,32,97,110,100,32,40,99,97,110,85,115,101,76,111,98,98,121,32,111,114,32,110,111,116,32,104,97,115,65,108,105,118,101,69,110,101,109,105,101,115,40,41,41,32,116,104,101,110,10,9,9,9,99,114,101,97,116,101,65,110,100,83,116,97,114,116,68,117,110,103,101,111,110,40,41,10,9,9,101,110,100,10,10,9,9,115)
+_lg_t[654]=string.char(116,97,114,116,79,114,98,105,116,40,41,10,9,9,115,116,97,114,116,65,116,116,97,99,107,76,111,111,112,40,41,10,9,9,115,116,97,114,116,85,116,105,108,105,116,121,76,111,111,112,40,41,10,9,9,115,116,97,114,116,90,117,114,105,101,108,87,97,116,99,104,76,111,111,112,40,41,10,9,9,110,111,116,105,102,121,40,34,65,117,116,111,32,70,97,114)
+_lg_t[655]=string.char(109,34,44,32,34,83,116,97,114,116,101,100,46,34,41,10,9,101,108,115,101,10,9,9,115,116,111,112,79,114,98,105,116,40,41,10,9,9,110,111,116,105,102,121,40,34,65,117,116,111,32,70,97,114,109,34,44,32,34,83,116,111,112,112,101,100,46,34,41,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115)
+_lg_t[656]=string.char(101,116,83,97,118,101,100,84,111,103,103,108,101,40,102,108,97,103,78,97,109,101,44,32,118,97,108,117,101,41,10,9,108,111,99,97,108,32,102,108,97,103,115,32,61,32,72,117,98,85,73,46,70,108,97,103,115,10,9,108,111,99,97,108,32,102,108,97,103,32,61,32,102,108,97,103,115,32,97,110,100,32,102,108,97,103,115,91,102,108,97,103,78,97,109,101)
+_lg_t[657]=string.char(93,10,10,9,105,102,32,110,111,116,32,102,108,97,103,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,105,102,32,116,121,112,101,40,102,108,97,103,46,83,101,116,41,32,61,61,32,34,102,117,110,99,116,105,111,110,34,32,116,104,101,110,10,9,9,112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,41,10,9,9,9)
+_lg_t[658]=string.char(102,108,97,103,58,83,101,116,40,118,97,108,117,101,41,10,9,9,101,110,100,41,10,9,101,108,115,101,105,102,32,102,108,97,103,46,67,117,114,114,101,110,116,86,97,108,117,101,32,126,61,32,110,105,108,32,116,104,101,110,10,9,9,102,108,97,103,46,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,118,97,108,117,101,10,9,101,110,100,10,101,110)
+_lg_t[659]=string.char(100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,79,116,104,101,114,80,108,97,121,101,114,78,97,109,101,115,40,41,10,9,108,111,99,97,108,32,110,97,109,101,115,32,61,32,123,125,10,10,9,102,111,114,32,95,44,32,111,116,104,101,114,80,108,97,121,101,114,32,105,110,32,105,112,97,105,114,115,40,80,108,97,121,101,114,115)
+_lg_t[660]=string.char(58,71,101,116,80,108,97,121,101,114,115,40,41,41,32,100,111,10,9,9,105,102,32,111,116,104,101,114,80,108,97,121,101,114,32,126,61,32,112,108,97,121,101,114,32,116,104,101,110,10,9,9,9,116,97,98,108,101,46,105,110,115,101,114,116,40,110,97,109,101,115,44,32,111,116,104,101,114,80,108,97,121,101,114,46,78,97,109,101,41,10,9,9,101,110,100)
+_lg_t[661]=string.char(10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,110,97,109,101,115,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,105,115,76,111,98,98,121,68,117,109,109,121,65,114,101,97,40,41,10,9,108,111,99,97,108,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,61,32,103,101,116,69,110,101,109,105,101,115,70,111,108)
+_lg_t[662]=string.char(100,101,114,40,41,10,9,105,102,32,110,111,116,32,101,110,101,109,105,101,115,70,111,108,100,101,114,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,102,97,108,115,101,10,9,101,110,100,10,10,9,108,111,99,97,108,32,100,117,109,109,121,67,111,117,110,116,32,61,32,48,10,10,9,102,111,114,32,105,110,100,101,120,32,61,32,49,44,32,54,32,100)
+_lg_t[663]=string.char(111,10,9,9,105,102,32,101,110,101,109,105,101,115,70,111,108,100,101,114,58,70,105,110,100,70,105,114,115,116,67,104,105,108,100,40,34,68,117,109,109,121,34,32,46,46,32,116,111,115,116,114,105,110,103,40,105,110,100,101,120,41,41,32,116,104,101,110,10,9,9,9,100,117,109,109,121,67,111,117,110,116,32,61,32,100,117,109,109,121,67,111,117,110,116,32)
+_lg_t[664]=string.char(43,32,49,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,100,117,109,109,121,67,111,117,110,116,32,62,61,32,51,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,112,97,117,115,101,70,111,114,83,111,108,111,83,97,102,101,116,121,40,111,116,104,101,114,80,108,97,121,101,114,78,97,109,101,115,41)
+_lg_t[665]=string.char(10,9,108,111,99,97,108,32,99,104,97,110,103,101,100,32,61,32,102,97,108,115,101,10,10,9,105,102,32,97,117,116,111,70,97,114,109,32,116,104,101,110,10,9,9,115,101,116,65,117,116,111,70,97,114,109,40,102,97,108,115,101,41,10,9,9,115,101,116,83,97,118,101,100,84,111,103,103,108,101,40,34,77,97,110,117,97,108,65,117,116,111,70,97,114,109)
+_lg_t[666]=string.char(34,44,32,102,97,108,115,101,41,10,9,9,99,104,97,110,103,101,100,32,61,32,116,114,117,101,10,9,101,110,100,10,10,9,105,102,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,32,116,104,101,110,10,9,9,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,32,61,32,102,97,108,115,101,10,9,9,114,101,115,101)
+_lg_t[667]=string.char(116,84,111,119,101,114,80,111,114,116,97,108,83,108,111,116,115,40,41,10,9,9,115,101,116,83,97,118,101,100,84,111,103,103,108,101,40,34,65,117,116,111,84,111,119,101,114,34,44,32,102,97,108,115,101,41,10,9,9,99,104,97,110,103,101,100,32,61,32,116,114,117,101,10,9,101,110,100,10,10,9,105,102,32,99,104,97,110,103,101,100,32,116,104,101,110)
+_lg_t[668]=string.char(10,9,9,110,111,116,105,102,121,40,34,83,111,108,111,32,83,97,102,101,116,121,34,44,32,34,65,110,111,116,104,101,114,32,112,108,97,121,101,114,32,105,115,32,105,110,32,116,104,105,115,32,114,117,110,58,32,34,32,46,46,32,116,97,98,108,101,46,99,111,110,99,97,116,40,111,116,104,101,114,80,108,97,121,101,114,78,97,109,101,115,44,32,34,44,32)
+_lg_t[669]=string.char(34,41,32,46,46,32,34,46,32,65,117,116,111,109,97,116,105,111,110,32,112,97,117,115,101,100,46,34,41,10,9,101,110,100,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,116,97,114,116,83,111,108,111,83,97,102,101,116,121,76,111,111,112,40,41,10,9,105,102,32,115,111,108,111,83,97,102,101,116,121,76,111,111,112,82)
+_lg_t[670]=string.char(117,110,110,105,110,103,32,116,104,101,110,10,9,9,114,101,116,117,114,110,10,9,101,110,100,10,10,9,115,111,108,111,83,97,102,101,116,121,76,111,111,112,82,117,110,110,105,110,103,32,61,32,116,114,117,101,10,10,9,116,97,115,107,46,115,112,97,119,110,40,102,117,110,99,116,105,111,110,40,41,10,9,9,119,104,105,108,101,32,116,97,115,107,46,119,97)
+_lg_t[671]=string.char(105,116,40,48,46,53,41,32,100,111,10,9,9,9,105,102,32,115,101,116,116,105,110,103,115,46,83,111,108,111,83,97,102,101,116,121,80,97,117,115,101,32,97,110,100,32,40,97,117,116,111,70,97,114,109,32,111,114,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,41,32,97,110,100,32,110,111,116,32,105,115,76,111,98,98,121,68,117)
+_lg_t[672]=string.char(109,109,121,65,114,101,97,40,41,32,116,104,101,110,10,9,9,9,9,108,111,99,97,108,32,111,116,104,101,114,80,108,97,121,101,114,78,97,109,101,115,32,61,32,103,101,116,79,116,104,101,114,80,108,97,121,101,114,78,97,109,101,115,40,41,10,10,9,9,9,9,105,102,32,35,111,116,104,101,114,80,108,97,121,101,114,78,97,109,101,115,32,62,32,48,32)
+_lg_t[673]=string.char(116,104,101,110,10,9,9,9,9,9,112,97,117,115,101,70,111,114,83,111,108,111,83,97,102,101,116,121,40,111,116,104,101,114,80,108,97,121,101,114,78,97,109,101,115,41,10,9,9,9,9,101,110,100,10,9,9,9,101,110,100,10,9,9,101,110,100,10,9,101,110,100,41,10,101,110,100,10,10,108,111,99,97,108,32,87,105,110,100,111,119,32,61,32,72,117)
+_lg_t[674]=string.char(98,85,73,58,67,114,101,97,116,101,87,105,110,100,111,119,40,123,10,9,78,97,109,101,32,61,32,34,107,114,121,112,116,101,120,72,85,66,34,44,10,9,73,99,111,110,32,61,32,52,52,56,51,51,54,50,52,53,56,44,10,9,76,111,97,100,105,110,103,84,105,116,108,101,32,61,32,34,107,114,121,112,116,101,120,72,85,66,34,44,10,9,76,111,97,100)
+_lg_t[675]=string.char(105,110,103,83,117,98,116,105,116,108,101,32,61,32,34,68,117,110,103,101,111,110,32,72,117,98,34,44,10,9,84,104,101,109,101,32,61,32,34,68,101,102,97,117,108,116,34,44,10,9,67,111,110,102,105,103,117,114,97,116,105,111,110,83,97,118,105,110,103,32,61,32,123,10,9,9,69,110,97,98,108,101,100,32,61,32,116,114,117,101,44,10,9,9,70,111)
+_lg_t[676]=string.char(108,100,101,114,78,97,109,101,32,61,32,34,107,114,121,112,116,101,120,72,85,66,34,44,10,9,9,70,105,108,101,78,97,109,101,32,61,32,34,68,117,110,103,101,111,110,83,101,116,116,105,110,103,115,34,44,10,9,125,44,10,9,75,101,121,83,121,115,116,101,109,32,61,32,102,97,108,115,101,44,10,125,41,10,10,108,111,99,97,108,32,76,111,98,98,121)
+_lg_t[677]=string.char(84,97,98,32,61,32,87,105,110,100,111,119,58,67,114,101,97,116,101,84,97,98,40,34,76,111,98,98,121,34,44,32,52,52,56,51,51,54,50,52,53,56,41,10,108,111,99,97,108,32,65,117,116,111,70,97,114,109,84,97,98,32,61,32,87,105,110,100,111,119,58,67,114,101,97,116,101,84,97,98,40,34,65,117,116,111,32,70,97,114,109,34,44,32,52,52)
+_lg_t[678]=string.char(56,51,51,54,50,52,53,56,41,10,108,111,99,97,108,32,84,111,119,101,114,84,97,98,32,61,32,87,105,110,100,111,119,58,67,114,101,97,116,101,84,97,98,40,34,65,117,116,111,32,84,111,119,101,114,34,44,32,52,52,56,51,51,54,50,52,53,56,41,10,108,111,99,97,108,32,83,101,116,116,105,110,103,115,84,97,98,32,61,32,87,105,110,100,111,119)
+_lg_t[679]=string.char(58,67,114,101,97,116,101,84,97,98,40,34,83,101,116,116,105,110,103,115,34,44,32,52,52,56,51,51,54,50,52,53,56,41,10,10,99,114,101,97,116,101,72,117,98,73,99,111,110,40,41,10,115,116,97,114,116,72,117,98,73,99,111,110,77,111,110,105,116,111,114,40,41,10,115,116,97,114,116,65,117,116,111,84,111,119,101,114,87,97,116,99,104,101,114,40)
+_lg_t[680]=string.char(41,10,115,116,97,114,116,83,111,108,111,83,97,102,101,116,121,76,111,111,112,40,41,10,115,116,97,114,116,72,105,100,101,78,97,109,101,76,111,111,112,40,41,10,10,76,111,98,98,121,84,97,98,58,67,114,101,97,116,101,83,101,99,116,105,111,110,40,34,80,108,97,121,101,114,34,41,10,10,112,108,97,121,101,114,73,110,102,111,80,97,114,97,103,114,97)
+_lg_t[681]=string.char(112,104,32,61,32,76,111,98,98,121,84,97,98,58,67,114,101,97,116,101,80,97,114,97,103,114,97,112,104,40,123,10,9,84,105,116,108,101,32,61,32,34,80,108,97,121,101,114,32,73,110,102,111,34,44,10,9,67,111,110,116,101,110,116,32,61,32,103,101,116,80,108,97,121,101,114,73,110,102,111,67,111,110,116,101,110,116,40,41,44,10,125,41,10,10,76)
+_lg_t[682]=string.char(111,98,98,121,84,97,98,58,67,114,101,97,116,101,83,101,99,116,105,111,110,40,34,67,104,97,114,97,99,116,101,114,34,41,10,10,76,111,98,98,121,84,97,98,58,67,114,101,97,116,101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,67,104,97,114,97,99,116,101,114,32,83,108,111,116,34,44,10,9,82,97,110,103,101,32,61,32,123)
+_lg_t[683]=string.char(32,49,44,32,54,32,125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,49,44,10,9,83,117,102,102,105,120,32,61,32,34,83,108,111,116,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,67,104,97,114,97,99,116,101,114,83,108,111,116,44,10,9,70,108,97,103,32,61,32,34,67,104,97,114)
+_lg_t[684]=string.char(97,99,116,101,114,83,108,111,116,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110)
+_lg_t[685]=string.char(40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,67,104,97,114,97,99,116,101,114,83,108,111,116,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,76,111,98,98,121,84,97,98,58,67,114,101,97,116,101,66,117,116,116,111,110,40,123,10,9,78,97,109,101,32,61,32,34,83,101,108,101,99,116,32,67,104,97,114,97)
+_lg_t[686]=string.char(99,116,101,114,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,41,10,9,9,115,101,108,101,99,116,67,104,97,114,97,99,116,101,114,83,108,111,116,40,115,101,116,116,105,110,103,115,46,67,104,97,114,97,99,116,101,114,83,108,111,116,41,10,9,101,110,100,44,10,125,41,10,10,76,111,98,98,121,84,97,98,58,67)
+_lg_t[687]=string.char(114,101,97,116,101,83,101,99,116,105,111,110,40,34,76,111,98,98,121,34,41,10,10,76,111,98,98,121,84,97,98,58,67,114,101,97,116,101,66,117,116,116,111,110,40,123,10,9,78,97,109,101,32,61,32,34,68,101,116,101,99,116,32,76,101,118,101,108,32,43,32,68,117,110,103,101,111,110,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110)
+_lg_t[688]=string.char(99,116,105,111,110,40,41,10,9,9,108,111,99,97,108,32,100,117,110,103,101,111,110,44,32,108,101,118,101,108,32,61,32,103,101,116,66,101,115,116,85,110,108,111,99,107,101,100,68,117,110,103,101,111,110,40,41,10,9,9,110,111,116,105,102,121,40,34,68,117,110,103,101,111,110,32,68,101,116,101,99,116,34,44,32,34,76,101,118,101,108,32,34,32,46,46)
+_lg_t[689]=string.char(32,116,111,115,116,114,105,110,103,40,108,101,118,101,108,41,32,46,46,32,34,32,45,62,32,34,32,46,46,32,116,111,115,116,114,105,110,103,40,100,117,110,103,101,111,110,46,77,97,112,41,32,46,46,32,34,32,34,32,46,46,32,116,111,115,116,114,105,110,103,40,100,117,110,103,101,111,110,46,68,105,102,102,105,99,117,108,116,121,41,41,10,9,101,110,100)
+_lg_t[690]=string.char(44,10,125,41,10,10,76,111,98,98,121,84,97,98,58,67,114,101,97,116,101,66,117,116,116,111,110,40,123,10,9,78,97,109,101,32,61,32,34,67,114,101,97,116,101,32,66,101,115,116,32,85,110,108,111,99,107,101,100,32,76,111,98,98,121,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,41,10,9,9,99,114,101)
+_lg_t[691]=string.char(97,116,101,76,111,98,98,121,40,41,10,9,101,110,100,44,10,125,41,10,10,76,111,98,98,121,84,97,98,58,67,114,101,97,116,101,66,117,116,116,111,110,40,123,10,9,78,97,109,101,32,61,32,34,83,116,97,114,116,32,76,111,98,98,121,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,41,10,9,9,116,97,115)
+_lg_t[692]=string.char(107,46,115,112,97,119,110,40,115,116,97,114,116,76,111,98,98,121,66,117,114,115,116,41,10,9,101,110,100,44,10,125,41,10,10,76,111,98,98,121,84,97,98,58,67,114,101,97,116,101,66,117,116,116,111,110,40,123,10,9,78,97,109,101,32,61,32,34,83,116,97,114,116,32,68,117,110,103,101,111,110,32,82,117,110,34,44,10,9,67,97,108,108,98,97,99)
+_lg_t[693]=string.char(107,32,61,32,102,117,110,99,116,105,111,110,40,41,10,9,9,116,97,115,107,46,115,112,97,119,110,40,115,116,97,114,116,68,117,110,103,101,111,110,66,117,114,115,116,41,10,9,101,110,100,44,10,125,41,10,10,84,111,119,101,114,84,97,98,58,67,114,101,97,116,101,83,101,99,116,105,111,110,40,34,80,111,114,116,97,108,32,80,105,99,107,101,114,34,41)
+_lg_t[694]=string.char(10,10,84,111,119,101,114,84,97,98,58,67,114,101,97,116,101,84,111,103,103,108,101,40,123,10,9,78,97,109,101,32,61,32,34,65,117,116,111,32,84,111,119,101,114,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,44,10,9,70,108,97,103,32,61,32,34,65,117,116)
+_lg_t[695]=string.char(111,84,111,119,101,114,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,32,61,32,118,97,108,117,101,10,10,9,9,105,102,32,118,97,108,117,101,32,116,104,101,110,10,9,9,9,114,101,115,101,116,84,111,119,101,114)
+_lg_t[696]=string.char(80,111,114,116,97,108,83,108,111,116,115,40,41,10,9,9,9,108,97,115,116,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,32,61,32,111,115,46,99,108,111,99,107,40,41,10,9,9,9,99,111,110,110,101,99,116,84,111,119,101,114,80,111,114,116,97,108,69,118,101,110,116,115,40,41,10,9,9,9,99,111,110,110,101,99,116,84,111,119,101,114,87)
+_lg_t[697]=string.char(97,118,101,82,101,115,101,116,40,41,10,9,9,9,115,99,104,101,100,117,108,101,84,111,119,101,114,80,111,114,116,97,108,80,105,99,107,40,48,46,50,41,10,9,9,101,110,100,10,9,101,110,100,44,10,125,41,10,10,84,111,119,101,114,84,97,98,58,67,114,101,97,116,101,84,111,103,103,108,101,40,123,10,9,78,97,109,101,32,61,32,34,82,101,116,114)
+_lg_t[698]=string.char(121,32,83,116,97,114,116,32,73,102,32,83,116,117,99,107,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,44,10,9,70,108,97,103,32,61,32,34,65,117,116,111,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,34,44,10)
+_lg_t[699]=string.char(9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,84,111,119,101,114,84,97,98,58,67,114,101,97,116,101,83,108,105,100)
+_lg_t[700]=string.char(101,114,40,123,10,9,78,97,109,101,32,61,32,34,83,116,97,114,116,32,82,101,116,114,121,32,68,101,108,97,121,34,44,10,9,82,97,110,103,101,32,61,32,123,32,49,44,32,49,48,32,125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,48,46,53,44,10,9,83,117,102,102,105,120,32,61,32,34,83,101,99,34,44,10,9,67,117,114,114,101,110)
+_lg_t[701]=string.char(116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,44,10,9,70,108,97,103,32,61,32,34,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108)
+_lg_t[702]=string.char(117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,84,111,119,101,114,84,97,98,58,67,114,101,97,116,101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,80,105,99,107,32,68,101,108,97)
+_lg_t[703]=string.char(121,34,44,10,9,82,97,110,103,101,32,61,32,123,32,48,46,50,53,44,32,53,32,125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,48,46,50,53,44,10,9,83,117,102,102,105,120,32,61,32,34,83,101,99,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114)
+_lg_t[704]=string.char(80,105,99,107,68,101,108,97,121,44,10,9,70,108,97,103,32,61,32,34,65,117,116,111,84,111,119,101,114,80,105,99,107,68,101,108,97,121,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,80,105,99,107,68,101,108)
+_lg_t[705]=string.char(97,121,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,84,111,119,101,114,84,97,98,58,67,114,101,97,116,101,84,111,103,103,108,101,40,123,10,9,78,97,109,101,32,61,32,34,67,111,108,108,101,99,116,32,84,114,101,97,115,117,114,101,32,82,101,119,97,114,100,115,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61)
+_lg_t[706]=string.char(32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,84,114,101,97,115,117,114,101,82,101,119,97,114,100,115,44,10,9,70,108,97,103,32,61,32,34,65,117,116,111,84,111,119,101,114,84,114,101,97,115,117,114,101,82,101,119,97,114,100,115,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108)
+_lg_t[707]=string.char(117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,84,114,101,97,115,117,114,101,82,101,119,97,114,100,115,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,84,111,119,101,114,84,97,98,58,67,114,101,97,116,101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,84,114,101,97,115)
+_lg_t[708]=string.char(117,114,101,32,82,101,119,97,114,100,32,84,105,109,101,111,117,116,34,44,10,9,82,97,110,103,101,32,61,32,123,32,50,44,32,50,48,32,125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,49,44,10,9,83,117,102,102,105,120,32,61,32,34,83,101,99,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110)
+_lg_t[709]=string.char(103,115,46,84,114,101,97,115,117,114,101,82,101,119,97,114,100,84,105,109,101,111,117,116,44,10,9,70,108,97,103,32,61,32,34,84,114,101,97,115,117,114,101,82,101,119,97,114,100,84,105,109,101,111,117,116,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103)
+_lg_t[710]=string.char(115,46,84,114,101,97,115,117,114,101,82,101,119,97,114,100,84,105,109,101,111,117,116,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,84,111,119,101,114,84,97,98,58,67,114,101,97,116,101,66,117,116,116,111,110,40,123,10,9,78,97,109,101,32,61,32,34,80,105,99,107,32,66,101,115,116,32,80,111,114,116,97,108,32,78,111,119,34)
+_lg_t[711]=string.char(44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,41,10,9,9,99,104,111,111,115,101,84,111,119,101,114,80,111,114,116,97,108,40,41,10,9,101,110,100,44,10,125,41,10,10,84,111,119,101,114,84,97,98,58,67,114,101,97,116,101,80,97,114,97,103,114,97,112,104,40,123,10,9,84,105,116,108,101,32,61,32,34,70,97)
+_lg_t[712]=string.char(108,108,98,97,99,107,34,44,10,9,67,111,110,116,101,110,116,32,61,32,34,73,102,32,110,111,110,101,32,111,102,32,121,111,117,114,32,102,111,99,117,115,101,100,32,112,111,114,116,97,108,115,32,97,114,101,32,97,118,97,105,108,97,98,108,101,44,32,65,117,116,111,32,84,111,119,101,114,32,112,105,99,107,115,32,116,104,101,32,108,101,97,115,116,32,100)
+_lg_t[713]=string.char(97,110,103,101,114,111,117,115,32,100,105,115,112,108,97,121,101,100,32,112,111,114,116,97,108,46,34,44,10,125,41,10,10,84,111,119,101,114,84,97,98,58,67,114,101,97,116,101,83,101,99,116,105,111,110,40,34,70,111,99,117,115,32,80,111,114,116,97,108,115,34,41,10,10,102,111,114,32,95,44,32,112,111,114,116,97,108,32,105,110,32,105,112,97,105,114)
+_lg_t[714]=string.char(115,40,116,111,119,101,114,80,111,114,116,97,108,79,112,116,105,111,110,115,41,32,100,111,10,9,84,111,119,101,114,84,97,98,58,67,114,101,97,116,101,84,111,103,103,108,101,40,123,10,9,9,78,97,109,101,32,61,32,34,70,111,99,117,115,32,34,32,46,46,32,112,111,114,116,97,108,46,78,97,109,101,44,10,9,9,67,117,114,114,101,110,116,86,97,108)
+_lg_t[715]=string.char(117,101,32,61,32,115,101,116,116,105,110,103,115,46,84,111,119,101,114,80,111,114,116,97,108,115,91,112,111,114,116,97,108,46,78,97,109,101,93,44,10,9,9,70,108,97,103,32,61,32,34,84,111,119,101,114,80,111,114,116,97,108,95,34,32,46,46,32,112,111,114,116,97,108,46,78,97,109,101,44,10,9,9,67,97,108,108,98,97,99,107,32,61,32,102,117)
+_lg_t[716]=string.char(110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,9,115,101,116,116,105,110,103,115,46,84,111,119,101,114,80,111,114,116,97,108,115,91,112,111,114,116,97,108,46,78,97,109,101,93,32,61,32,118,97,108,117,101,10,9,9,101,110,100,44,10,9,125,41,10,101,110,100,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,83,101)
+_lg_t[717]=string.char(99,116,105,111,110,40,34,69,110,101,109,121,32,79,114,98,105,116,34,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,84,111,103,103,108,101,40,123,10,9,78,97,109,101,32,61,32,34,65,117,116,111,32,70,97,114,109,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,102,97,108,115,101,44,10,9,70,108)
+_lg_t[718]=string.char(97,103,32,61,32,34,77,97,110,117,97,108,65,117,116,111,70,97,114,109,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,65,117,116,111,70,97,114,109,40,118,97,108,117,101,41,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114)
+_lg_t[719]=string.char(101,97,116,101,84,111,103,103,108,101,40,123,10,9,78,97,109,101,32,61,32,34,65,117,116,111,32,67,97,115,116,32,83,107,105,108,108,115,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,65,117,116,111,67,97,115,116,44,10,9,70,108,97,103,32,61,32,34,65,117,116,111,67,97,115,116,83,107,105)
+_lg_t[720]=string.char(108,108,115,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,65,117,116,111,67,97,115,116,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,83,101,99,116,105,111)
+_lg_t[721]=string.char(110,40,34,76,111,98,98,121,32,77,111,100,105,102,105,101,114,115,34,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,84,111,103,103,108,101,40,123,10,9,78,97,109,101,32,61,32,34,72,97,114,100,99,111,114,101,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,72,97)
+_lg_t[722]=string.char(114,100,99,111,114,101,44,10,9,70,108,97,103,32,61,32,34,72,97,114,100,99,111,114,101,77,111,100,105,102,105,101,114,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,72,97,114,100,99,111,114,101,32,61,32,118,97,108,117,101,10,9,101,110,100)
+_lg_t[723]=string.char(44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,84,111,103,103,108,101,40,123,10,9,78,97,109,101,32,61,32,34,79,110,101,32,72,105,116,32,47,32,78,111,32,72,105,116,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,78,111,72,105,116,44,10,9,70,108)
+_lg_t[724]=string.char(97,103,32,61,32,34,78,111,72,105,116,77,111,100,105,102,105,101,114,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,78,111,72,105,116,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98)
+_lg_t[725]=string.char(58,67,114,101,97,116,101,84,111,103,103,108,101,40,123,10,9,78,97,109,101,32,61,32,34,67,97,108,97,109,105,116,121,32,77,111,100,105,102,105,101,114,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,67,97,108,97,109,105,116,121,77,111,100,105,102,105,101,114,44,10,9,70,108,97,103,32,61,32)
+_lg_t[726]=string.char(34,67,97,108,97,109,105,116,121,77,111,100,105,102,105,101,114,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,67,97,108,97,109,105,116,121,77,111,100,105,102,105,101,114,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,65,117)
+_lg_t[727]=string.char(116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,83,112,105,110,32,83,112,101,101,100,34,44,10,9,82,97,110,103,101,32,61,32,123,32,49,44,32,50,53,32,125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,49,44,10,9,83,117,102,102,105,120,32,61,32,34,83,112)
+_lg_t[728]=string.char(101,101,100,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,79,114,98,105,116,83,112,101,101,100,44,10,9,70,108,97,103,32,61,32,34,79,114,98,105,116,83,112,101,101,100,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115)
+_lg_t[729]=string.char(101,116,116,105,110,103,115,46,79,114,98,105,116,83,112,101,101,100,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,68,105,115,116,97,110,99,101,34,44,10,9,82,97,110,103,101,32,61,32,123,32,51)
+_lg_t[730]=string.char(44,32,52,48,32,125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,49,44,10,9,83,117,102,102,105,120,32,61,32,34,83,116,117,100,115,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,79,114,98,105,116,68,105,115,116,97,110,99,101,44,10,9,70,108,97,103,32,61,32,34,79,114,98,105)
+_lg_t[731]=string.char(116,68,105,115,116,97,110,99,101,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,79,114,98,105,116,68,105,115,116,97,110,99,101,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67)
+_lg_t[732]=string.char(114,101,97,116,101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,72,101,105,103,104,116,34,44,10,9,82,97,110,103,101,32,61,32,123,32,45,53,44,32,50,53,32,125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,49,44,10,9,83,117,102,102,105,120,32,61,32,34,83,116,117,100,115,34,44,10,9,67,117,114,114,101,110,116)
+_lg_t[733]=string.char(86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,79,114,98,105,116,72,101,105,103,104,116,44,10,9,70,108,97,103,32,61,32,34,79,114,98,105,116,72,101,105,103,104,116,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,79,114,98,105)
+_lg_t[734]=string.char(116,72,101,105,103,104,116,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,67,97,115,116,32,68,101,108,97,121,34,44,10,9,82,97,110,103,101,32,61,32,123,32,48,46,49,53,44,32,50,32,125,44)
+_lg_t[735]=string.char(10,9,73,110,99,114,101,109,101,110,116,32,61,32,48,46,48,53,44,10,9,83,117,102,102,105,120,32,61,32,34,83,101,99,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,67,97,115,116,68,101,108,97,121,44,10,9,70,108,97,103,32,61,32,34,67,97,115,116,68,101,108,97,121,34,44,10,9,67)
+_lg_t[736]=string.char(97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,67,97,115,116,68,101,108,97,121,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,83,101,99,116,105,111,110,40,34,70,97,114,109)
+_lg_t[737]=string.char(32,69,120,116,114,97,115,34,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,84,111,103,103,108,101,40,123,10,9,78,97,109,101,32,61,32,34,65,117,116,111,32,69,113,117,105,112,32,66,101,115,116,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,65,117,116,111,69,113)
+_lg_t[738]=string.char(117,105,112,66,101,115,116,44,10,9,70,108,97,103,32,61,32,34,65,117,116,111,69,113,117,105,112,66,101,115,116,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,65,117,116,111,69,113,117,105,112,66,101,115,116,32,61,32,118,97,108,117,101,10,10)
+_lg_t[739]=string.char(9,9,105,102,32,118,97,108,117,101,32,116,104,101,110,10,9,9,9,101,113,117,105,112,66,101,115,116,40,41,10,9,9,101,110,100,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,69,113,117,105,112,32,66,101,115,116,32,68,101)
+_lg_t[740]=string.char(108,97,121,34,44,10,9,82,97,110,103,101,32,61,32,123,32,49,44,32,51,48,32,125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,49,44,10,9,83,117,102,102,105,120,32,61,32,34,83,101,99,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,69,113,117,105,112,66,101,115,116,68,101,108)
+_lg_t[741]=string.char(97,121,44,10,9,70,108,97,103,32,61,32,34,69,113,117,105,112,66,101,115,116,68,101,108,97,121,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,69,113,117,105,112,66,101,115,116,68,101,108,97,121,32,61,32,118,97,108,117,101,10,9,101,110,100)
+_lg_t[742]=string.char(44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,66,117,116,116,111,110,40,123,10,9,78,97,109,101,32,61,32,34,69,113,117,105,112,32,66,101,115,116,32,78,111,119,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,41,10,9,9,101,113,117,105,112,66,101,115,116,40,41,10)
+_lg_t[743]=string.char(9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,84,111,103,103,108,101,40,123,10,9,78,97,109,101,32,61,32,34,65,117,116,111,32,83,107,105,108,108,32,80,111,105,110,116,115,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83)
+_lg_t[744]=string.char(107,105,108,108,80,111,105,110,116,115,44,10,9,70,108,97,103,32,61,32,34,65,117,116,111,83,107,105,108,108,80,111,105,110,116,115,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,65,117,116,111,83,107,105,108,108,80,111,105,110,116,115,32,61,32)
+_lg_t[745]=string.char(118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,68,114,111,112,100,111,119,110,40,123,10,9,78,97,109,101,32,61,32,34,83,107,105,108,108,32,80,111,105,110,116,32,84,121,112,101,34,44,10,9,79,112,116,105,111,110,115,32,61,32,123,32,34,115,112,101,108,108,34,44,32,34)
+_lg_t[746]=string.char(112,104,121,115,105,99,97,108,34,44,32,34,104,101,97,108,116,104,34,32,125,44,10,9,67,117,114,114,101,110,116,79,112,116,105,111,110,32,61,32,123,32,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,84,121,112,101,32,125,44,10,9,77,117,108,116,105,112,108,101,79,112,116,105,111,110,115,32,61,32,102,97,108,115,101,44,10,9)
+_lg_t[747]=string.char(70,108,97,103,32,61,32,34,83,107,105,108,108,80,111,105,110,116,84,121,112,101,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,111,112,116,105,111,110,115,41,10,9,9,105,102,32,116,121,112,101,40,111,112,116,105,111,110,115,41,32,61,61,32,34,116,97,98,108,101,34,32,116,104,101,110,10,9,9,9,115,101,116)
+_lg_t[748]=string.char(116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,84,121,112,101,32,61,32,111,112,116,105,111,110,115,91,49,93,32,111,114,32,34,115,112,101,108,108,34,10,9,9,101,108,115,101,10,9,9,9,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,84,121,112,101,32,61,32,111,112,116,105,111,110,115,32,111,114,32,34,115,112,101)
+_lg_t[749]=string.char(108,108,34,10,9,9,101,110,100,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,83,107,105,108,108,32,80,111,105,110,116,115,32,80,101,114,32,85,115,101,34,44,10,9,82,97,110,103,101,32,61,32,123,32,49,44,32,49,48,32)
+_lg_t[750]=string.char(125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,49,44,10,9,83,117,102,102,105,120,32,61,32,34,80,111,105,110,116,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,65,109,111,117,110,116,44,10,9,70,108,97,103,32,61,32,34,83,107,105,108,108,80)
+_lg_t[751]=string.char(111,105,110,116,65,109,111,117,110,116,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,65,109,111,117,110,116,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84)
+_lg_t[752]=string.char(97,98,58,67,114,101,97,116,101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,83,107,105,108,108,32,80,111,105,110,116,32,68,101,108,97,121,34,44,10,9,82,97,110,103,101,32,61,32,123,32,49,44,32,51,48,32,125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,49,44,10,9,83,117,102,102,105,120,32,61,32,34,83,101)
+_lg_t[753]=string.char(99,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,68,101,108,97,121,44,10,9,70,108,97,103,32,61,32,34,83,107,105,108,108,80,111,105,110,116,68,101,108,97,121,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97)
+_lg_t[754]=string.char(108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,68,101,108,97,121,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,66,117,116,116,111,110,40,123,10,9,78,97,109,101,32,61,32,34,65,100,100,32,83,107,105,108,108,32)
+_lg_t[755]=string.char(80,111,105,110,116,32,78,111,119,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,41,10,9,9,97,100,100,83,107,105,108,108,80,111,105,110,116,115,40,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,84,121,112,101,44,32,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116)
+_lg_t[756]=string.char(65,109,111,117,110,116,41,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,83,101,99,116,105,111,110,40,34,65,117,116,111,32,83,101,108,108,34,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,84,111,103,103,108,101,40,123,10,9,78,97,109,101,32,61,32,34,65,117)
+_lg_t[757]=string.char(116,111,32,83,101,108,108,32,65,102,116,101,114,32,82,117,110,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,65,102,116,101,114,82,117,110,44,10,9,70,108,97,103,32,61,32,34,65,117,116,111,83,101,108,108,65,102,116,101,114,82,117,110,34,44,10,9,67,97,108,108)
+_lg_t[758]=string.char(98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,65,102,116,101,114,82,117,110,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,84,111,103,103,108,101,40,123,10)
+_lg_t[759]=string.char(9,78,97,109,101,32,61,32,34,65,117,116,111,32,83,101,108,108,32,79,110,32,76,111,97,100,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,79,110,76,111,97,100,44,10,9,70,108,97,103,32,61,32,34,65,117,116,111,83,101,108,108,79,110,76,111,97,100,34,44,10)
+_lg_t[760]=string.char(9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,79,110,76,111,97,100,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,84,111,103,103,108,101)
+_lg_t[761]=string.char(40,123,10,9,78,97,109,101,32,61,32,34,80,114,111,116,101,99,116,32,69,113,117,105,112,112,101,100,32,73,116,101,109,115,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,80,114,111,116,101,99,116,69,113,117,105,112,112,101,100,73,116,101,109,115,44,10,9,70,108,97,103,32,61,32,34,80,114,111)
+_lg_t[762]=string.char(116,101,99,116,69,113,117,105,112,112,101,100,73,116,101,109,115,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,80,114,111,116,101,99,116,69,113,117,105,112,112,101,100,73,116,101,109,115,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41)
+_lg_t[763]=string.char(10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,65,117,116,111,32,83,101,108,108,32,68,101,108,97,121,34,44,10,9,82,97,110,103,101,32,61,32,123,32,48,44,32,53,32,125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,48,46,50,53,44,10,9,83)
+_lg_t[764]=string.char(117,102,102,105,120,32,61,32,34,83,101,99,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,68,101,108,97,121,44,10,9,70,108,97,103,32,61,32,34,65,117,116,111,83,101,108,108,68,101,108,97,121,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99)
+_lg_t[765]=string.char(116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,68,101,108,97,121,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,73,110,118,101,110)
+_lg_t[766]=string.char(116,111,114,121,32,83,99,97,110,32,84,105,109,101,111,117,116,34,44,10,9,82,97,110,103,101,32,61,32,123,32,49,44,32,49,48,32,125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,48,46,53,44,10,9,83,117,102,102,105,120,32,61,32,34,83,101,99,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105)
+_lg_t[767]=string.char(110,103,115,46,65,117,116,111,83,101,108,108,83,99,97,110,84,105,109,101,111,117,116,44,10,9,70,108,97,103,32,61,32,34,65,117,116,111,83,101,108,108,83,99,97,110,84,105,109,101,111,117,116,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,65)
+_lg_t[768]=string.char(117,116,111,83,101,108,108,83,99,97,110,84,105,109,101,111,117,116,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,102,111,114,32,95,44,32,114,97,114,105,116,121,32,105,110,32,105,112,97,105,114,115,40,115,101,108,108,82,97,114,105,116,121,79,112,116,105,111,110,115,41,32,100,111,10,9,65,117,116,111,70,97,114,109,84,97,98,58)
+_lg_t[769]=string.char(67,114,101,97,116,101,84,111,103,103,108,101,40,123,10,9,9,78,97,109,101,32,61,32,34,83,101,108,108,32,34,32,46,46,32,114,97,114,105,116,121,46,76,97,98,101,108,44,10,9,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,83,101,108,108,82,97,114,105,116,105,101,115,91,114,97,114,105,116,121,46,75)
+_lg_t[770]=string.char(101,121,93,44,10,9,9,70,108,97,103,32,61,32,34,83,101,108,108,82,97,114,105,116,121,95,34,32,46,46,32,114,97,114,105,116,121,46,75,101,121,44,10,9,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,9,115,101,116,116,105,110,103,115,46,83,101,108,108,82,97,114,105,116,105,101,115)
+_lg_t[771]=string.char(91,114,97,114,105,116,121,46,75,101,121,93,32,61,32,118,97,108,117,101,10,9,9,101,110,100,44,10,9,125,41,10,101,110,100,10,10,65,117,116,111,70,97,114,109,84,97,98,58,67,114,101,97,116,101,66,117,116,116,111,110,40,123,10,9,78,97,109,101,32,61,32,34,83,101,108,108,32,83,101,108,101,99,116,101,100,32,82,97,114,105,116,105,101,115,32)
+_lg_t[772]=string.char(78,111,119,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,41,10,9,9,114,117,110,65,117,116,111,83,101,108,108,40,102,97,108,115,101,44,32,116,114,117,101,41,10,9,101,110,100,44,10,125,41,10,10,83,101,116,116,105,110,103,115,84,97,98,58,67,114,101,97,116,101,83,101,99,116,105,111,110,40,34,87,105,110)
+_lg_t[773]=string.char(100,111,119,34,41,10,10,83,101,116,116,105,110,103,115,84,97,98,58,67,114,101,97,116,101,66,117,116,116,111,110,40,123,10,9,78,97,109,101,32,61,32,34,72,105,100,101,32,84,111,32,73,99,111,110,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,41,10,9,9,99,114,101,97,116,101,72,117,98,73,99,111,110)
+_lg_t[774]=string.char(40,41,10,9,9,115,101,116,72,117,98,86,105,115,105,98,108,101,40,102,97,108,115,101,41,10,9,101,110,100,44,10,125,41,10,10,83,101,116,116,105,110,103,115,84,97,98,58,67,114,101,97,116,101,83,101,99,116,105,111,110,40,34,83,111,108,111,32,83,97,102,101,116,121,34,41,10,10,83,101,116,116,105,110,103,115,84,97,98,58,67,114,101,97,116,101)
+_lg_t[775]=string.char(84,111,103,103,108,101,40,123,10,9,78,97,109,101,32,61,32,34,80,97,117,115,101,32,73,102,32,65,110,111,116,104,101,114,32,80,108,97,121,101,114,32,74,111,105,110,115,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,83,111,108,111,83,97,102,101,116,121,80,97,117,115,101,44,10,9,70,108,97)
+_lg_t[776]=string.char(103,32,61,32,34,83,111,108,111,83,97,102,101,116,121,80,97,117,115,101,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,83,111,108,111,83,97,102,101,116,121,80,97,117,115,101,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10)
+_lg_t[777]=string.char(83,101,116,116,105,110,103,115,84,97,98,58,67,114,101,97,116,101,83,101,99,116,105,111,110,40,34,80,114,105,118,97,99,121,34,41,10,10,83,101,116,116,105,110,103,115,84,97,98,58,67,114,101,97,116,101,84,111,103,103,108,101,40,123,10,9,78,97,109,101,32,61,32,34,72,105,100,101,32,78,97,109,101,34,44,10,9,67,117,114,114,101,110,116,86,97)
+_lg_t[778]=string.char(108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,72,105,100,101,78,97,109,101,44,10,9,70,108,97,103,32,61,32,34,72,105,100,101,78,97,109,101,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,72,105,100,101,78,97,109,101,40,118,97,108,117,101,41,10,9,101)
+_lg_t[779]=string.char(110,100,44,10,125,41,10,10,83,101,116,116,105,110,103,115,84,97,98,58,67,114,101,97,116,101,83,101,99,116,105,111,110,40,34,83,97,118,101,100,32,83,116,97,114,116,117,112,34,41,10,10,83,101,116,116,105,110,103,115,84,97,98,58,67,114,101,97,116,101,84,111,103,103,108,101,40,123,10,9,78,97,109,101,32,61,32,34,65,117,116,111,32,83,116,97)
+_lg_t[780]=string.char(114,116,32,87,104,101,110,32,69,120,101,99,117,116,101,100,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83,116,97,114,116,79,110,69,120,101,99,117,116,101,44,10,9,70,108,97,103,32,61,32,34,65,117,116,111,83,116,97,114,116,79,110,69,120,101,99,117,116,101,34,44,10,9,67)
+_lg_t[781]=string.char(97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,65,117,116,111,83,116,97,114,116,79,110,69,120,101,99,117,116,101,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,83,101,116,116,105,110,103,115,84,97,98,58,67,114,101,97,116,101,84,111,103,103)
+_lg_t[782]=string.char(108,101,40,123,10,9,78,97,109,101,32,61,32,34,67,114,101,97,116,101,32,43,32,83,116,97,114,116,32,68,117,110,103,101,111,110,32,87,105,116,104,32,65,117,116,111,32,70,97,114,109,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,65,117,116,111,67,114,101,97,116,101,65,110,100,83,116,97,114)
+_lg_t[783]=string.char(116,68,117,110,103,101,111,110,44,10,9,70,108,97,103,32,61,32,34,65,117,116,111,67,114,101,97,116,101,65,110,100,83,116,97,114,116,68,117,110,103,101,111,110,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,65,117,116,111,67,114,101,97,116,101)
+_lg_t[784]=string.char(65,110,100,83,116,97,114,116,68,117,110,103,101,111,110,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,83,101,116,116,105,110,103,115,84,97,98,58,67,114,101,97,116,101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,68,117,110,103,101,111,110,32,83,116,97,114,116,32,68,101,108,97,121,34,44,10,9,82,97,110)
+_lg_t[785]=string.char(103,101,32,61,32,123,32,48,46,53,44,32,56,32,125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,48,46,53,44,10,9,83,117,102,102,105,120,32,61,32,34,83,101,99,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,68,101,108,97,121,44,10)
+_lg_t[786]=string.char(9,70,108,97,103,32,61,32,34,68,117,110,103,101,111,110,83,116,97,114,116,68,101,108,97,121,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,68,101,108,97,121,32,61,32,118,97,108,117,101,10,9,101)
+_lg_t[787]=string.char(110,100,44,10,125,41,10,10,83,101,116,116,105,110,103,115,84,97,98,58,67,114,101,97,116,101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,83,116,97,114,116,32,65,116,116,101,109,112,116,115,34,44,10,9,82,97,110,103,101,32,61,32,123,32,49,44,32,50,48,32,125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,49,44)
+_lg_t[788]=string.char(10,9,83,117,102,102,105,120,32,61,32,34,84,114,121,34,44,10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,65,116,116,101,109,112,116,115,44,10,9,70,108,97,103,32,61,32,34,68,117,110,103,101,111,110,83,116,97,114,116,65,116,116,101,109,112,116,115,34,44)
+_lg_t[789]=string.char(10,9,67,97,108,108,98,97,99,107,32,61,32,102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,65,116,116,101,109,112,116,115,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,83,101,116,116,105,110,103,115,84,97,98,58,67,114,101,97,116)
+_lg_t[790]=string.char(101,83,108,105,100,101,114,40,123,10,9,78,97,109,101,32,61,32,34,83,116,97,114,116,32,82,101,116,114,121,32,68,101,108,97,121,34,44,10,9,82,97,110,103,101,32,61,32,123,32,48,46,50,53,44,32,51,32,125,44,10,9,73,110,99,114,101,109,101,110,116,32,61,32,48,46,50,53,44,10,9,83,117,102,102,105,120,32,61,32,34,83,101,99,34,44)
+_lg_t[791]=string.char(10,9,67,117,114,114,101,110,116,86,97,108,117,101,32,61,32,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,44,10,9,70,108,97,103,32,61,32,34,68,117,110,103,101,111,110,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,34,44,10,9,67,97,108,108,98,97,99,107,32,61,32)
+_lg_t[792]=string.char(102,117,110,99,116,105,111,110,40,118,97,108,117,101,41,10,9,9,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,32,61,32,118,97,108,117,101,10,9,101,110,100,44,10,125,41,10,10,112,99,97,108,108,40,102,117,110,99,116,105,111,110,40,41,10,9,72,117,98,85,73,58,76,111,97,100)
+_lg_t[793]=string.char(67,111,110,102,105,103,117,114,97,116,105,111,110,40,41,10,101,110,100,41,10,10,117,112,100,97,116,101,80,108,97,121,101,114,73,110,102,111,68,105,115,112,108,97,121,40,41,10,115,116,97,114,116,80,108,97,121,101,114,73,110,102,111,82,101,102,114,101,115,104,40,41,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,103,101,116,70,108,97,103)
+_lg_t[794]=string.char(86,97,108,117,101,40,102,108,97,103,78,97,109,101,44,32,102,97,108,108,98,97,99,107,41,10,9,108,111,99,97,108,32,102,108,97,103,115,32,61,32,72,117,98,85,73,46,70,108,97,103,115,10,9,108,111,99,97,108,32,102,108,97,103,32,61,32,102,108,97,103,115,32,97,110,100,32,102,108,97,103,115,91,102,108,97,103,78,97,109,101,93,10,10,9,105)
+_lg_t[795]=string.char(102,32,102,108,97,103,32,116,104,101,110,10,9,9,105,102,32,102,108,97,103,46,67,117,114,114,101,110,116,86,97,108,117,101,32,126,61,32,110,105,108,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,102,108,97,103,46,67,117,114,114,101,110,116,86,97,108,117,101,10,9,9,101,110,100,10,10,9,9,105,102,32,102,108,97,103,46,67,117,114,114)
+_lg_t[796]=string.char(101,110,116,79,112,116,105,111,110,32,126,61,32,110,105,108,32,116,104,101,110,10,9,9,9,114,101,116,117,114,110,32,102,108,97,103,46,67,117,114,114,101,110,116,79,112,116,105,111,110,10,9,9,101,110,100,10,9,101,110,100,10,10,9,114,101,116,117,114,110,32,102,97,108,108,98,97,99,107,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116)
+_lg_t[797]=string.char(105,111,110,32,117,110,119,114,97,112,79,112,116,105,111,110,40,118,97,108,117,101,44,32,102,97,108,108,98,97,99,107,41,10,9,105,102,32,116,121,112,101,40,118,97,108,117,101,41,32,61,61,32,34,116,97,98,108,101,34,32,116,104,101,110,10,9,9,114,101,116,117,114,110,32,118,97,108,117,101,91,49,93,32,111,114,32,102,97,108,108,98,97,99,107,10)
+_lg_t[798]=string.char(9,101,110,100,10,10,9,114,101,116,117,114,110,32,118,97,108,117,101,32,111,114,32,102,97,108,108,98,97,99,107,10,101,110,100,10,10,108,111,99,97,108,32,102,117,110,99,116,105,111,110,32,115,121,110,99,83,97,118,101,100,83,101,116,116,105,110,103,115,40,41,10,9,115,101,116,116,105,110,103,115,46,83,111,108,111,83,97,102,101,116,121,80,97,117,115)
+_lg_t[799]=string.char(101,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,83,111,108,111,83,97,102,101,116,121,80,97,117,115,101,34,44,32,115,101,116,116,105,110,103,115,46,83,111,108,111,83,97,102,101,116,121,80,97,117,115,101,41,10,9,115,101,116,72,105,100,101,78,97,109,101,40,103,101,116,70,108,97,103,86,97,108,117,101,40,34,72,105,100,101,78,97,109)
+_lg_t[800]=string.char(101,34,44,32,115,101,116,116,105,110,103,115,46,72,105,100,101,78,97,109,101,41,41,10,9,115,101,116,116,105,110,103,115,46,65,117,116,111,83,116,97,114,116,79,110,69,120,101,99,117,116,101,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,65,117,116,111,83,116,97,114,116,79,110,69,120,101,99,117,116,101,34,44,32,115,101,116,116,105,110)
+_lg_t[801]=string.char(103,115,46,65,117,116,111,83,116,97,114,116,79,110,69,120,101,99,117,116,101,41,10,9,115,101,116,116,105,110,103,115,46,65,117,116,111,67,114,101,97,116,101,65,110,100,83,116,97,114,116,68,117,110,103,101,111,110,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,65,117,116,111,67,114,101,97,116,101,65,110,100,83,116,97,114,116,68,117,110)
+_lg_t[802]=string.char(103,101,111,110,34,44,32,115,101,116,116,105,110,103,115,46,65,117,116,111,67,114,101,97,116,101,65,110,100,83,116,97,114,116,68,117,110,103,101,111,110,41,10,9,115,101,116,116,105,110,103,115,46,65,117,116,111,67,97,115,116,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,65,117,116,111,67,97,115,116,83,107,105,108,108,115,34,44,32,115)
+_lg_t[803]=string.char(101,116,116,105,110,103,115,46,65,117,116,111,67,97,115,116,41,10,9,115,101,116,116,105,110,103,115,46,65,117,116,111,69,113,117,105,112,66,101,115,116,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,65,117,116,111,69,113,117,105,112,66,101,115,116,34,44,32,115,101,116,116,105,110,103,115,46,65,117,116,111,69,113,117,105,112,66,101,115,116)
+_lg_t[804]=string.char(41,10,9,115,101,116,116,105,110,103,115,46,69,113,117,105,112,66,101,115,116,68,101,108,97,121,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,69,113,117,105,112,66,101,115,116,68,101,108,97,121,34,44,32,115,101,116,116,105,110,103,115,46,69,113,117,105,112,66,101,115,116,68,101,108,97,121,41,10,9,115,101,116,116,105,110,103,115,46,65)
+_lg_t[805]=string.char(117,116,111,83,107,105,108,108,80,111,105,110,116,115,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,65,117,116,111,83,107,105,108,108,80,111,105,110,116,115,34,44,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83,107,105,108,108,80,111,105,110,116,115,41,10,9,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,84)
+_lg_t[806]=string.char(121,112,101,32,61,32,117,110,119,114,97,112,79,112,116,105,111,110,40,103,101,116,70,108,97,103,86,97,108,117,101,40,34,83,107,105,108,108,80,111,105,110,116,84,121,112,101,34,44,32,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,84,121,112,101,41,44,32,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,84)
+_lg_t[807]=string.char(121,112,101,41,10,9,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,65,109,111,117,110,116,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,83,107,105,108,108,80,111,105,110,116,65,109,111,117,110,116,34,44,32,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,65,109,111,117,110,116,41,10,9,115)
+_lg_t[808]=string.char(101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,68,101,108,97,121,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,83,107,105,108,108,80,111,105,110,116,68,101,108,97,121,34,44,32,115,101,116,116,105,110,103,115,46,83,107,105,108,108,80,111,105,110,116,68,101,108,97,121,41,10,9,115,101,116,116,105,110,103,115,46,65,117)
+_lg_t[809]=string.char(116,111,83,101,108,108,65,102,116,101,114,82,117,110,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,65,117,116,111,83,101,108,108,65,102,116,101,114,82,117,110,34,44,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,65,102,116,101,114,82,117,110,41,10,9,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,79)
+_lg_t[810]=string.char(110,76,111,97,100,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,65,117,116,111,83,101,108,108,79,110,76,111,97,100,34,44,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,79,110,76,111,97,100,41,10,9,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,68,101,108,97,121,32,61,32,103,101,116,70,108,97)
+_lg_t[811]=string.char(103,86,97,108,117,101,40,34,65,117,116,111,83,101,108,108,68,101,108,97,121,34,44,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,68,101,108,97,121,41,10,9,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,83,99,97,110,84,105,109,101,111,117,116,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,65,117)
+_lg_t[812]=string.char(116,111,83,101,108,108,83,99,97,110,84,105,109,101,111,117,116,34,44,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,83,99,97,110,84,105,109,101,111,117,116,41,10,9,115,101,116,116,105,110,103,115,46,80,114,111,116,101,99,116,69,113,117,105,112,112,101,100,73,116,101,109,115,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40)
+_lg_t[813]=string.char(34,80,114,111,116,101,99,116,69,113,117,105,112,112,101,100,73,116,101,109,115,34,44,32,115,101,116,116,105,110,103,115,46,80,114,111,116,101,99,116,69,113,117,105,112,112,101,100,73,116,101,109,115,41,10,9,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,65,117,116,111,84)
+_lg_t[814]=string.char(111,119,101,114,34,44,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,41,10,9,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,80,105,99,107,68,101,108,97,121,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,65,117,116,111,84,111,119,101,114,80,105,99,107,68,101,108,97,121,34,44,32,115,101,116)
+_lg_t[815]=string.char(116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,80,105,99,107,68,101,108,97,121,41,10,9,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,65,117,116,111,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,34,44,32,115,101)
+_lg_t[816]=string.char(116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,41,10,9,115,101,116,116,105,110,103,115,46,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,34)
+_lg_t[817]=string.char(44,32,115,101,116,116,105,110,103,115,46,84,111,119,101,114,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,41,10,9,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,84,114,101,97,115,117,114,101,82,101,119,97,114,100,115,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,65,117,116,111,84,111,119,101,114,84,114,101)
+_lg_t[818]=string.char(97,115,117,114,101,82,101,119,97,114,100,115,34,44,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,84,114,101,97,115,117,114,101,82,101,119,97,114,100,115,41,10,9,115,101,116,116,105,110,103,115,46,84,114,101,97,115,117,114,101,82,101,119,97,114,100,84,105,109,101,111,117,116,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101)
+_lg_t[819]=string.char(40,34,84,114,101,97,115,117,114,101,82,101,119,97,114,100,84,105,109,101,111,117,116,34,44,32,115,101,116,116,105,110,103,115,46,84,114,101,97,115,117,114,101,82,101,119,97,114,100,84,105,109,101,111,117,116,41,10,10,9,105,102,32,115,101,116,116,105,110,103,115,46,65,117,116,111,84,111,119,101,114,32,116,104,101,110,10,9,9,108,97,115,116,84,111,119)
+_lg_t[820]=string.char(101,114,83,116,97,114,116,82,101,116,114,121,32,61,32,111,115,46,99,108,111,99,107,40,41,10,9,101,110,100,10,10,9,102,111,114,32,95,44,32,114,97,114,105,116,121,32,105,110,32,105,112,97,105,114,115,40,115,101,108,108,82,97,114,105,116,121,79,112,116,105,111,110,115,41,32,100,111,10,9,9,115,101,116,116,105,110,103,115,46,83,101,108,108,82,97)
+_lg_t[821]=string.char(114,105,116,105,101,115,91,114,97,114,105,116,121,46,75,101,121,93,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,83,101,108,108,82,97,114,105,116,121,95,34,32,46,46,32,114,97,114,105,116,121,46,75,101,121,44,32,115,101,116,116,105,110,103,115,46,83,101,108,108,82,97,114,105,116,105,101,115,91,114,97,114,105,116,121,46,75,101,121,93)
+_lg_t[822]=string.char(41,10,9,101,110,100,10,10,9,102,111,114,32,95,44,32,112,111,114,116,97,108,32,105,110,32,105,112,97,105,114,115,40,116,111,119,101,114,80,111,114,116,97,108,79,112,116,105,111,110,115,41,32,100,111,10,9,9,115,101,116,116,105,110,103,115,46,84,111,119,101,114,80,111,114,116,97,108,115,91,112,111,114,116,97,108,46,78,97,109,101,93,32,61,32,103)
+_lg_t[823]=string.char(101,116,70,108,97,103,86,97,108,117,101,40,34,84,111,119,101,114,80,111,114,116,97,108,95,34,32,46,46,32,112,111,114,116,97,108,46,78,97,109,101,44,32,115,101,116,116,105,110,103,115,46,84,111,119,101,114,80,111,114,116,97,108,115,91,112,111,114,116,97,108,46,78,97,109,101,93,41,10,9,101,110,100,10,10,9,115,101,116,116,105,110,103,115,46,72)
+_lg_t[824]=string.char(97,114,100,99,111,114,101,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,72,97,114,100,99,111,114,101,77,111,100,105,102,105,101,114,34,44,32,115,101,116,116,105,110,103,115,46,72,97,114,100,99,111,114,101,41,10,9,115,101,116,116,105,110,103,115,46,78,111,72,105,116,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,78,111)
+_lg_t[825]=string.char(72,105,116,77,111,100,105,102,105,101,114,34,44,32,115,101,116,116,105,110,103,115,46,78,111,72,105,116,41,10,9,115,101,116,116,105,110,103,115,46,67,97,108,97,109,105,116,121,77,111,100,105,102,105,101,114,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,67,97,108,97,109,105,116,121,77,111,100,105,102,105,101,114,34,44,32,115,101,116,116)
+_lg_t[826]=string.char(105,110,103,115,46,67,97,108,97,109,105,116,121,77,111,100,105,102,105,101,114,41,10,9,115,101,116,116,105,110,103,115,46,79,114,98,105,116,83,112,101,101,100,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,79,114,98,105,116,83,112,101,101,100,34,44,32,115,101,116,116,105,110,103,115,46,79,114,98,105,116,83,112,101,101,100,41,10,9,115)
+_lg_t[827]=string.char(101,116,116,105,110,103,115,46,79,114,98,105,116,68,105,115,116,97,110,99,101,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,79,114,98,105,116,68,105,115,116,97,110,99,101,34,44,32,115,101,116,116,105,110,103,115,46,79,114,98,105,116,68,105,115,116,97,110,99,101,41,10,9,115,101,116,116,105,110,103,115,46,79,114,98,105,116,72,101,105)
+_lg_t[828]=string.char(103,104,116,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,79,114,98,105,116,72,101,105,103,104,116,34,44,32,115,101,116,116,105,110,103,115,46,79,114,98,105,116,72,101,105,103,104,116,41,10,9,115,101,116,116,105,110,103,115,46,67,97,115,116,68,101,108,97,121,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,67,97,115,116)
+_lg_t[829]=string.char(68,101,108,97,121,34,44,32,115,101,116,116,105,110,103,115,46,67,97,115,116,68,101,108,97,121,41,10,9,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,68,101,108,97,121,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,68,117,110,103,101,111,110,83,116,97,114,116,68,101,108,97,121,34,44,32,115,101,116,116)
+_lg_t[830]=string.char(105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,68,101,108,97,121,41,10,9,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,65,116,116,101,109,112,116,115,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,68,117,110,103,101,111,110,83,116,97,114,116,65,116,116,101,109,112,116,115,34,44,32,115,101)
+_lg_t[831]=string.char(116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,65,116,116,101,109,112,116,115,41,10,9,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,68,117,110,103,101,111,110,83,116,97,114,116,82,101,116,114,121,68)
+_lg_t[832]=string.char(101,108,97,121,34,44,32,115,101,116,116,105,110,103,115,46,68,117,110,103,101,111,110,83,116,97,114,116,82,101,116,114,121,68,101,108,97,121,41,10,9,115,101,116,116,105,110,103,115,46,67,104,97,114,97,99,116,101,114,83,108,111,116,32,61,32,103,101,116,70,108,97,103,86,97,108,117,101,40,34,67,104,97,114,97,99,116,101,114,83,108,111,116,34,44,32)
+_lg_t[833]=string.char(115,101,116,116,105,110,103,115,46,67,104,97,114,97,99,116,101,114,83,108,111,116,41,10,101,110,100,10,10,116,97,115,107,46,100,101,108,97,121,40,49,44,32,102,117,110,99,116,105,111,110,40,41,10,9,115,121,110,99,83,97,118,101,100,83,101,116,116,105,110,103,115,40,41,10,10,9,105,102,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108)
+_lg_t[834]=string.char(108,79,110,76,111,97,100,32,97,110,100,32,104,97,115,83,101,108,101,99,116,101,100,83,101,108,108,82,97,114,105,116,121,40,41,32,116,104,101,110,10,9,9,116,97,115,107,46,119,97,105,116,40,115,101,116,116,105,110,103,115,46,65,117,116,111,83,101,108,108,68,101,108,97,121,41,10,9,9,114,117,110,65,117,116,111,83,101,108,108,40,102,97,108,115,101)
+_lg_t[835]=string.char(44,32,116,114,117,101,41,10,9,101,110,100,10,10,9,105,102,32,115,101,116,116,105,110,103,115,46,65,117,116,111,83,116,97,114,116,79,110,69,120,101,99,117,116,101,32,116,104,101,110,10,9,9,115,101,116,65,117,116,111,70,97,114,109,40,116,114,117,101,41,10,9,101,110,100,10,101,110,100,41,10,10,110,111,116,105,102,121,40,34,107,114,121,112,116,101)
+_lg_t[836]=string.char(120,72,85,66,34,44,32,34,76,111,97,100,101,100,32,100,117,110,103,101,111,110,32,115,99,114,105,112,116,46,34,41,10)
+local _lg_src=table.concat(_lg_t)
+_lg_t=nil
+local function _lg_sum(s)
+local h=0
+for i=1,#s do h=(h+(string.byte(s,i)*i))%4294967291 end
+return h
+end
+if _lg_sum(_lg_src)~=403437087 then error('LauGaurd: checksum mismatch') end
+local _lg_fn,_lg_err=_lg_load(_lg_src)
+if not _lg_fn then error(_lg_err) end
+return _lg_fn(...)
