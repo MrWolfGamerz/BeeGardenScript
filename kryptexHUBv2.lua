@@ -43,7 +43,6 @@ local settings = {
 	AutoSellDelay = 1,
 	AutoSellScanTimeout = 5,
 	ProtectEquippedItems = true,
-	Privacy = false,
 	AutoTower = false,
 	AutoTowerPickDelay = 1.25,
 	AutoTowerStartRetry = true,
@@ -145,7 +144,6 @@ local attackLoopRunning = false
 local utilityLoopRunning = false
 local dungeonFlowRunning = false
 local soloSafetyLoopRunning = false
-local privacyLoopRunning = false
 local zurielWatchLoopRunning = false
 local zurielSeenAlive = false
 local zurielTeleportDone = false
@@ -1967,64 +1965,6 @@ local function startPlayerInfoRefresh()
 	end)
 end
 
-local function hideUiTarget(object)
-	if not object then
-		return
-	end
-
-	pcall(function()
-		if object:IsA("GuiObject") then
-			object.Visible = false
-		elseif object:IsA("BillboardGui") or object:IsA("SurfaceGui") or object:IsA("ScreenGui") then
-			object.Enabled = false
-		end
-	end)
-end
-
-local function applyPrivacy()
-	local key = "Na" .. "me"
-	local playerGui = player:FindFirstChild("PlayerGui")
-	local playerData = playerGui and playerGui:FindFirstChild("PlayerData")
-	local frame = playerData and playerData:FindFirstChild("Frame")
-	local profileFrame = frame and frame:FindFirstChild("Profile")
-
-	hideUiTarget(profileFrame and profileFrame:FindFirstChild("Profile"))
-	hideUiTarget(frame and frame:FindFirstChild("Player" .. key))
-
-	local character = player.Character or Workspace:FindFirstChild(player.Name)
-	local root = character and character:FindFirstChild("HumanoidRootPart")
-	local plate = root and root:FindFirstChild("Main" .. key .. "plate")
-
-	if plate then
-		hideUiTarget(plate:FindFirstChild("Guildtag", true))
-		hideUiTarget(plate:FindFirstChild("Player" .. key, true))
-	end
-end
-
-local function setPrivacy(value)
-	settings.Privacy = value
-
-	if value then
-		pcall(applyPrivacy)
-	end
-end
-
-local function startPrivacyLoop()
-	if privacyLoopRunning then
-		return
-	end
-
-	privacyLoopRunning = true
-
-	task.spawn(function()
-		while task.wait(1) do
-			if settings.Privacy then
-				pcall(applyPrivacy)
-			end
-		end
-	end)
-end
-
 local function getCurrentDungeonMapName()
 	local dungeonSettings = Workspace:FindFirstChild("DungeonSettings")
 	local mapName = getStringValue(dungeonSettings, {
@@ -3119,17 +3059,6 @@ SettingsTab:CreateToggle({
 	end,
 })
 
-SettingsTab:CreateSection("Privacy")
-
-SettingsTab:CreateToggle({
-	Name = "Privacy",
-	CurrentValue = settings.Privacy,
-	Flag = "Privacy",
-	Callback = function(value)
-		setPrivacy(value)
-	end,
-})
-
 SettingsTab:CreateSection("Saved Startup")
 
 SettingsTab:CreateToggle({
@@ -3192,7 +3121,6 @@ end)
 
 updatePlayerInfoDisplay()
 startPlayerInfoRefresh()
-pcall(startPrivacyLoop)
 
 local function getFlagValue(flagName, fallback)
 	local flags = HubUI.Flags
@@ -3221,7 +3149,6 @@ end
 
 local function syncSavedSettings()
 	settings.SoloSafetyPause = getFlagValue("SoloSafetyPause", settings.SoloSafetyPause)
-	setPrivacy(getFlagValue("Privacy", settings.Privacy))
 	settings.AutoStartOnExecute = getFlagValue("AutoStartOnExecute", settings.AutoStartOnExecute)
 	settings.AutoCreateAndStartDungeon = getFlagValue("AutoCreateAndStartDungeon", settings.AutoCreateAndStartDungeon)
 	settings.AutoCast = getFlagValue("AutoCastSkills", settings.AutoCast)
