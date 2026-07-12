@@ -1,5 +1,6 @@
 -- kryptex Dungeon Hub
 -- Hub script using the provided remotes.
+-- Premium farmer build with attack avoidance.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -21,6 +22,11 @@ local settings = {
 	OrbitDistance = 10,
 	OrbitHeight = 4,
 	CastDelay = 0.35,
+	PremiumDodge = true,
+	PremiumDodgeRadius = 18,
+	PremiumDodgePush = 22,
+	PremiumDodgeHeight = 7,
+	PremiumHazardScanDelay = 0.15,
 	AutoCast = true,
 	AutoEquipBest = false,
 	EquipBestDelay = 5,
@@ -168,10 +174,47 @@ local hubIconGui
 local hubIconButton
 local hookedMinimizeButtons = {}
 local finalBossAttackLock
+local cachedHazards = {}
+local lastHazardScan = 0
 
 local ZURIEL_CLEAR_POSITION = Vector3.new(-59.861, -101.444, -1474.841)
 local EPHRATH_CLEAR_CFRAME = CFrame.new(-86.484, -40.969, -3942.660)
 local GRAIL_ARENA_CFRAME = CFrame.new(1302.258, 433.780, -4008.982)
+
+local premiumHazardNames = {
+	FirstBoss = {
+		"JumpRing",
+		"BigLine",
+		"Claw",
+		"SwordLines",
+		"SwordFall",
+		"Line",
+		"SpellPart",
+	},
+	SecondBoss = {
+		"Line",
+		"SimulSubCircle",
+		"HomingOrb",
+		"SpellPart",
+	},
+	HolyGrail = {
+		"HolyBombIndicator",
+		"HolyBomb",
+		"Line",
+	},
+	FinalBoss = {
+		"Line",
+		"GrailSpill",
+		"MovingLine",
+		"Rift",
+		"SimulSubCircle",
+		"ShieldBash",
+		"BombCircle",
+		"ShockwaveCrystal",
+		"LaserLine",
+		"BigBeams",
+	},
+}
 
 local function getRemote(name)
 	return ReplicatedStorage:FindFirstChild(name) or ReplicatedStorage:WaitForChild(name, 2)
@@ -385,7 +428,7 @@ local function createHubIcon()
 	end
 
 	local gui = Instance.new("ScreenGui")
-	gui.Name = "kryptexHUBIcon"
+	gui.Name = "premiumfarmerIcon"
 	gui.ResetOnSpawn = false
 	gui.IgnoreGuiInset = true
 
@@ -2284,6 +2327,160 @@ local function getEphrathEnemy()
 	return findAliveEnemyByName("Ephrath", true)
 end
 
+local function getPremiumDodgePhase()
+	if not isCurrentDungeonMap("The First Sanctuary") then
+		return nil
+	end
+
+	if getZurielEnemy() or zurielSeenAlive then
+		return "FirstBoss"
+	end
+
+	if getEphrathEnemy() or ephrathSeenAlive then
+		return "SecondBoss"
+	end
+
+	if findAliveEnemyByName("Holy Grail", true) then
+		return "HolyGrail"
+	end
+
+	if finalBossAttackLock
+		or findPresentEnemyByName("Yaldabaoth", true)
+		or findAliveEnemyByName("Grail Arm", true)
+		or findAliveEnemyByName("Shield Arm", true)
+		or findAliveEnemyByName("Staff Arm", true)
+		or findAliveEnemyByName("Sword Arm", true)
+	then
+		return "FinalBoss"
+	end
+end
+
+local function hazardNameMatches(objectName, names)
+	local lowerName = string.lower(tostring(objectName or ""))
+
+	for _, hazardName in ipairs(names) do
+		local lowerHazard = string.lower(hazardName)
+		if lowerName == lowerHazard or string.find(lowerName, lowerHazard, 1, true) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function getHazardRoot(object)
+	if not object or not object.Parent then
+		return nil
+	end
+
+	if object:IsA("BasePart") then
+		return object
+	end
+
+	if object:IsA("Model") then
+		return object.PrimaryPart or object:FindFirstChildWhichIsA("BasePart", true)
+	end
+
+	return object:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function getHazardSize(object, root)
+	if object:IsA("BasePart") then
+		return math.max(object.Size.X, object.Size.Y, object.Size.Z)
+	end
+
+	if object:IsA("Model") then
+		local ok, size = pcall(function()
+			return object:GetExtentsSize()
+		end)
+
+		if ok and size then
+			return math.max(size.X, size.Y, size.Z)
+		end
+	end
+
+	if root and root:IsA("BasePart") then
+		return math.max(root.Size.X, root.Size.Y, root.Size.Z)
+	end
+
+	return 6
+end
+
+local function getActivePremiumHazards(referencePosition)
+	if not settings.PremiumDodge then
+		return {}
+	end
+
+	local phase = getPremiumDodgePhase()
+	local hazardNames = phase and premiumHazardNames[phase]
+	if not hazardNames then
+		return {}
+	end
+
+	local now = os.clock()
+	if now - lastHazardScan < settings.PremiumHazardScanDelay then
+		return cachedHazards
+	end
+
+	lastHazardScan = now
+	cachedHazards = {}
+
+	for _, object in ipairs(Workspace:GetDescendants()) do
+		if (object:IsA("BasePart") or object:IsA("Model")) and hazardNameMatches(object.Name, hazardNames) then
+			local root = getHazardRoot(object)
+
+			if root then
+				local distance = (root.Position - referencePosition).Magnitude
+				if distance <= math.max(settings.PremiumDodgeRadius * 8, 120) then
+					table.insert(cachedHazards, {
+						Root = root,
+						Radius = math.max(settings.PremiumDodgeRadius, getHazardSize(object, root) * 0.5),
+					})
+				end
+			end
+		end
+	end
+
+	return cachedHazards
+end
+
+local function getPremiumSafeOrbitPosition(targetPosition, basePosition)
+	if not settings.PremiumDodge then
+		return basePosition
+	end
+
+	local safePosition = basePosition
+	local push = Vector3.zero
+	local hazards = getActivePremiumHazards(basePosition)
+
+	for _, hazard in ipairs(hazards) do
+		local hazardRoot = hazard.Root
+		if hazardRoot and hazardRoot.Parent then
+			local away = safePosition - hazardRoot.Position
+			local flatAway = Vector3.new(away.X, 0, away.Z)
+			local distance = flatAway.Magnitude
+			local dangerRadius = hazard.Radius + settings.PremiumDodgeRadius
+
+			if distance < dangerRadius then
+				if distance < 0.1 then
+					local fallbackAway = safePosition - targetPosition
+					flatAway = Vector3.new(fallbackAway.X, 0, fallbackAway.Z)
+					distance = math.max(flatAway.Magnitude, 0.1)
+				end
+
+				push += flatAway.Unit * ((dangerRadius - distance) + settings.PremiumDodgePush)
+			end
+		end
+	end
+
+	if push.Magnitude > 0 then
+		local dodgePosition = safePosition + Vector3.new(push.X, settings.PremiumDodgeHeight, push.Z)
+		return dodgePosition
+	end
+
+	return safePosition
+end
+
 local function teleportToCFrame(cframe)
 	local ok = pcall(function()
 		local character = player.Character or player.CharacterAdded:Wait()
@@ -2386,8 +2583,10 @@ local function orbitEnemy(enemy)
 		settings.OrbitHeight,
 		math.sin(angle) * settings.OrbitDistance
 	)
+	local desiredPosition = enemyRoot.Position + offset
+	local safePosition = getPremiumSafeOrbitPosition(enemyRoot.Position, desiredPosition)
 
-	root.CFrame = CFrame.lookAt(enemyRoot.Position + offset, enemyRoot.Position)
+	root.CFrame = CFrame.lookAt(safePosition, enemyRoot.Position)
 end
 
 local function castFarmCycle()
@@ -2601,15 +2800,15 @@ local function startSoloSafetyLoop()
 end
 
 local Window = HubUI:CreateWindow({
-	Name = "kryptexHUB",
+	Name = "premiumfarmer",
 	Icon = 4483362458,
-	LoadingTitle = "kryptexHUB",
-	LoadingSubtitle = "Dungeon Hub",
+	LoadingTitle = "premiumfarmer",
+	LoadingSubtitle = "Premium Dungeon Farmer",
 	Theme = "Default",
 	ConfigurationSaving = {
 		Enabled = true,
-		FolderName = "kryptexHUB",
-		FileName = "DungeonSettings",
+		FolderName = "premiumfarmer",
+		FileName = "PremiumSettings",
 	},
 	KeySystem = false,
 })
@@ -2875,6 +3074,66 @@ AutoFarmTab:CreateSlider({
 	Flag = "CastDelay",
 	Callback = function(value)
 		settings.CastDelay = value
+	end,
+})
+
+AutoFarmTab:CreateSection("Premium Dodge")
+
+AutoFarmTab:CreateToggle({
+	Name = "Avoid Boss Attacks",
+	CurrentValue = settings.PremiumDodge,
+	Flag = "PremiumDodge",
+	Callback = function(value)
+		settings.PremiumDodge = value
+		cachedHazards = {}
+	end,
+})
+
+AutoFarmTab:CreateSlider({
+	Name = "Dodge Radius",
+	Range = { 6, 40 },
+	Increment = 1,
+	Suffix = "Studs",
+	CurrentValue = settings.PremiumDodgeRadius,
+	Flag = "PremiumDodgeRadius",
+	Callback = function(value)
+		settings.PremiumDodgeRadius = value
+	end,
+})
+
+AutoFarmTab:CreateSlider({
+	Name = "Dodge Push",
+	Range = { 5, 60 },
+	Increment = 1,
+	Suffix = "Studs",
+	CurrentValue = settings.PremiumDodgePush,
+	Flag = "PremiumDodgePush",
+	Callback = function(value)
+		settings.PremiumDodgePush = value
+	end,
+})
+
+AutoFarmTab:CreateSlider({
+	Name = "Dodge Height",
+	Range = { 0, 30 },
+	Increment = 1,
+	Suffix = "Studs",
+	CurrentValue = settings.PremiumDodgeHeight,
+	Flag = "PremiumDodgeHeight",
+	Callback = function(value)
+		settings.PremiumDodgeHeight = value
+	end,
+})
+
+AutoFarmTab:CreateSlider({
+	Name = "Hazard Scan Delay",
+	Range = { 0.05, 0.5 },
+	Increment = 0.05,
+	Suffix = "Sec",
+	CurrentValue = settings.PremiumHazardScanDelay,
+	Flag = "PremiumHazardScanDelay",
+	Callback = function(value)
+		settings.PremiumHazardScanDelay = value
 	end,
 })
 
@@ -3189,6 +3448,11 @@ local function syncSavedSettings()
 	settings.OrbitDistance = getFlagValue("OrbitDistance", settings.OrbitDistance)
 	settings.OrbitHeight = getFlagValue("OrbitHeight", settings.OrbitHeight)
 	settings.CastDelay = getFlagValue("CastDelay", settings.CastDelay)
+	settings.PremiumDodge = getFlagValue("PremiumDodge", settings.PremiumDodge)
+	settings.PremiumDodgeRadius = getFlagValue("PremiumDodgeRadius", settings.PremiumDodgeRadius)
+	settings.PremiumDodgePush = getFlagValue("PremiumDodgePush", settings.PremiumDodgePush)
+	settings.PremiumDodgeHeight = getFlagValue("PremiumDodgeHeight", settings.PremiumDodgeHeight)
+	settings.PremiumHazardScanDelay = getFlagValue("PremiumHazardScanDelay", settings.PremiumHazardScanDelay)
 	settings.DungeonStartDelay = getFlagValue("DungeonStartDelay", settings.DungeonStartDelay)
 	settings.DungeonStartAttempts = getFlagValue("DungeonStartAttempts", settings.DungeonStartAttempts)
 	settings.DungeonStartRetryDelay = getFlagValue("DungeonStartRetryDelay", settings.DungeonStartRetryDelay)
@@ -3208,4 +3472,4 @@ task.delay(1, function()
 	end
 end)
 
-notify("kryptexHUB", "Loaded dungeon script.")
+notify("premiumfarmer", "Loaded premium farmer.")
