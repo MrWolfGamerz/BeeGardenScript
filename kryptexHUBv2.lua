@@ -43,6 +43,7 @@ local settings = {
 	AutoSellDelay = 1,
 	AutoSellScanTimeout = 5,
 	ProtectEquippedItems = true,
+	HideName = false,
 	AutoTower = false,
 	AutoTowerPickDelay = 1.25,
 	AutoTowerStartRetry = true,
@@ -144,6 +145,7 @@ local attackLoopRunning = false
 local utilityLoopRunning = false
 local dungeonFlowRunning = false
 local soloSafetyLoopRunning = false
+local hideNameLoopRunning = false
 local zurielWatchLoopRunning = false
 local zurielSeenAlive = false
 local zurielTeleportDone = false
@@ -1964,6 +1966,65 @@ local function startPlayerInfoRefresh()
 	end)
 end
 
+local function hideGuiObject(object)
+	if object and object:IsA("GuiObject") then
+		pcall(function()
+			object.Visible = false
+		end)
+	end
+end
+
+local function setGuiText(object, text)
+	if object and (object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox")) then
+		pcall(function()
+			object.Text = text
+		end)
+	end
+end
+
+local function applyNameHiding()
+	local playerGui = player:FindFirstChild("PlayerGui")
+	local playerData = playerGui and playerGui:FindFirstChild("PlayerData")
+	local frame = playerData and playerData:FindFirstChild("Frame")
+	local profileFrame = frame and frame:FindFirstChild("Profile")
+
+	hideGuiObject(profileFrame and profileFrame:FindFirstChild("Profile"))
+	setGuiText(frame and frame:FindFirstChild("PlayerName"), "KryptexScripts")
+
+	local character = player.Character or Workspace:FindFirstChild(player.Name)
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	local nameplate = root and root:FindFirstChild("MainNameplate")
+
+	if nameplate then
+		hideGuiObject(nameplate:FindFirstChild("Guildtag", true))
+		hideGuiObject(nameplate:FindFirstChild("PlayerName", true))
+	end
+end
+
+local function setNameHiding(value)
+	settings.HideName = value
+
+	if value then
+		applyNameHiding()
+	end
+end
+
+local function startNameHideLoop()
+	if hideNameLoopRunning then
+		return
+	end
+
+	hideNameLoopRunning = true
+
+	task.spawn(function()
+		while task.wait(1) do
+			if settings.HideName then
+				applyNameHiding()
+			end
+		end
+	end)
+end
+
 local function getCurrentDungeonMapName()
 	local dungeonSettings = Workspace:FindFirstChild("DungeonSettings")
 	local mapName = getStringValue(dungeonSettings, {
@@ -3042,6 +3103,17 @@ SettingsTab:CreateToggle({
 	end,
 })
 
+SettingsTab:CreateSection("Privacy")
+
+SettingsTab:CreateToggle({
+	Name = "Hide Name",
+	CurrentValue = settings.HideName,
+	Flag = "NameHiderEnabled",
+	Callback = function(value)
+		setNameHiding(value)
+	end,
+})
+
 SettingsTab:CreateSection("Saved Startup")
 
 SettingsTab:CreateToggle({
@@ -3104,6 +3176,7 @@ end)
 
 updatePlayerInfoDisplay()
 startPlayerInfoRefresh()
+startNameHideLoop()
 
 local function getFlagValue(flagName, fallback)
 	local flags = HubUI.Flags
@@ -3132,6 +3205,7 @@ end
 
 local function syncSavedSettings()
 	settings.SoloSafetyPause = getFlagValue("SoloSafetyPause", settings.SoloSafetyPause)
+	setNameHiding(getFlagValue("NameHiderEnabled", settings.HideName))
 	settings.AutoStartOnExecute = getFlagValue("AutoStartOnExecute", settings.AutoStartOnExecute)
 	settings.AutoCreateAndStartDungeon = getFlagValue("AutoCreateAndStartDungeon", settings.AutoCreateAndStartDungeon)
 	settings.AutoCast = getFlagValue("AutoCastSkills", settings.AutoCast)
