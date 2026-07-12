@@ -43,7 +43,6 @@ local settings = {
 	AutoSellDelay = 1,
 	AutoSellScanTimeout = 5,
 	ProtectEquippedItems = true,
-	HideName = false,
 	AutoTower = false,
 	AutoTowerPickDelay = 1.25,
 	AutoTowerStartRetry = true,
@@ -145,7 +144,6 @@ local attackLoopRunning = false
 local utilityLoopRunning = false
 local dungeonFlowRunning = false
 local soloSafetyLoopRunning = false
-local hideNameLoopRunning = false
 local zurielWatchLoopRunning = false
 local zurielSeenAlive = false
 local zurielTeleportDone = false
@@ -168,7 +166,6 @@ local lastSkillPoint = 0
 local hubIconGui
 local hubIconButton
 local hookedMinimizeButtons = {}
-local hideNameOriginals = setmetatable({}, { __mode = "k" })
 local finalBossAttackLock
 
 local ZURIEL_CLEAR_POSITION = Vector3.new(-59.861, -101.444, -1474.841)
@@ -1967,126 +1964,6 @@ local function startPlayerInfoRefresh()
 	end)
 end
 
-local function rememberOriginal(instance, property)
-	if not instance then
-		return
-	end
-
-	local state = hideNameOriginals[instance]
-	if not state then
-		state = {}
-		hideNameOriginals[instance] = state
-	end
-
-	if state[property] == nil then
-		pcall(function()
-			state[property] = instance[property]
-		end)
-	end
-end
-
-local function setHiddenProperty(instance, property, value)
-	if not instance then
-		return
-	end
-
-	rememberOriginal(instance, property)
-
-	pcall(function()
-		instance[property] = value
-	end)
-end
-
-local function restoreHiddenNameObjects()
-	for instance, properties in pairs(hideNameOriginals) do
-		if instance and instance.Parent then
-			for property, value in pairs(properties) do
-				pcall(function()
-					instance[property] = value
-				end)
-			end
-		end
-	end
-end
-
-local function getLocalPlayerGui()
-	return player:FindFirstChild("PlayerGui")
-end
-
-local function applyPlayerDataNameHider()
-	local playerGui = getLocalPlayerGui()
-	local playerData = playerGui and playerGui:FindFirstChild("PlayerData")
-	local frame = playerData and playerData:FindFirstChild("Frame")
-	local profileFrame = frame and frame:FindFirstChild("Profile")
-	local profile = profileFrame and profileFrame:FindFirstChild("Profile")
-	local playerName = frame and frame:FindFirstChild("PlayerName")
-
-	if profile and profile:IsA("GuiObject") then
-		setHiddenProperty(profile, "Visible", false)
-	end
-
-	if playerName and (playerName:IsA("TextLabel") or playerName:IsA("TextButton")) then
-		setHiddenProperty(playerName, "Text", "KryptexScripts")
-	end
-end
-
-local function getLocalWorkspaceCharacter()
-	return player.Character or Workspace:FindFirstChild(player.Name)
-end
-
-local function applyNameplateHider()
-	local character = getLocalWorkspaceCharacter()
-	local root = character and character:FindFirstChild("HumanoidRootPart")
-	local nameplate = root and root:FindFirstChild("MainNameplate")
-
-	if not nameplate then
-		return
-	end
-
-	local guildTag = nameplate:FindFirstChild("Guildtag", true)
-	local playerName = nameplate:FindFirstChild("PlayerName", true)
-
-	if guildTag and guildTag:IsA("GuiObject") then
-		setHiddenProperty(guildTag, "Visible", false)
-	end
-
-	if playerName and playerName:IsA("GuiObject") then
-		setHiddenProperty(playerName, "Visible", false)
-	end
-end
-
-local function applyHideName()
-	applyPlayerDataNameHider()
-	applyNameplateHider()
-end
-
-local function setHideName(value)
-	settings.HideName = value
-
-	if value then
-		applyHideName()
-		return
-	end
-
-	restoreHiddenNameObjects()
-end
-
-local function startHideNameLoop()
-	if hideNameLoopRunning then
-		return
-	end
-
-	hideNameLoopRunning = true
-
-	task.spawn(function()
-		while task.wait(1) do
-			if settings.HideName then
-				applyHideName()
-			end
-		end
-	end)
-end
-
 local function getCurrentDungeonMapName()
 	local dungeonSettings = Workspace:FindFirstChild("DungeonSettings")
 	local mapName = getStringValue(dungeonSettings, {
@@ -3165,17 +3042,6 @@ SettingsTab:CreateToggle({
 	end,
 })
 
-SettingsTab:CreateSection("Privacy")
-
-SettingsTab:CreateToggle({
-	Name = "Hide Name",
-	CurrentValue = settings.HideName,
-	Flag = "PrivacyHideName",
-	Callback = function(value)
-		setHideName(value)
-	end,
-})
-
 SettingsTab:CreateSection("Saved Startup")
 
 SettingsTab:CreateToggle({
@@ -3236,11 +3102,6 @@ pcall(function()
 	HubUI:LoadConfiguration()
 end)
 
-task.spawn(function()
-	task.wait(0.1)
-	pcall(startHideNameLoop)
-end)
-
 updatePlayerInfoDisplay()
 startPlayerInfoRefresh()
 
@@ -3271,7 +3132,6 @@ end
 
 local function syncSavedSettings()
 	settings.SoloSafetyPause = getFlagValue("SoloSafetyPause", settings.SoloSafetyPause)
-	setHideName(getFlagValue("PrivacyHideName", settings.HideName))
 	settings.AutoStartOnExecute = getFlagValue("AutoStartOnExecute", settings.AutoStartOnExecute)
 	settings.AutoCreateAndStartDungeon = getFlagValue("AutoCreateAndStartDungeon", settings.AutoCreateAndStartDungeon)
 	settings.AutoCast = getFlagValue("AutoCastSkills", settings.AutoCast)
