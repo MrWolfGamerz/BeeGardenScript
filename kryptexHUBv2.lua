@@ -43,7 +43,7 @@ local settings = {
 	AutoSellDelay = 1,
 	AutoSellScanTimeout = 5,
 	ProtectEquippedItems = true,
-	PrivacyMode = false,
+	Privacy = false,
 	AutoTower = false,
 	AutoTowerPickDelay = 1.25,
 	AutoTowerStartRetry = true,
@@ -149,6 +149,7 @@ local privacyLoopRunning = false
 local zurielWatchLoopRunning = false
 local zurielSeenAlive = false
 local zurielTeleportDone = false
+local zurielTeleportPending = false
 local ephrathSeenAlive = false
 local ephrathTeleportDone = false
 local ephrathTeleportAt = 0
@@ -1966,7 +1967,7 @@ local function startPlayerInfoRefresh()
 	end)
 end
 
-local function setGuiHidden(object)
+local function hideUiTarget(object)
 	if not object then
 		return
 	end
@@ -1974,47 +1975,37 @@ local function setGuiHidden(object)
 	pcall(function()
 		if object:IsA("GuiObject") then
 			object.Visible = false
+		elseif object:IsA("BillboardGui") or object:IsA("SurfaceGui") or object:IsA("ScreenGui") then
+			object.Enabled = false
 		end
 	end)
 end
 
-local function setGuiLabel(object, text)
-	if not object then
-		return
-	end
-
-	pcall(function()
-		if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
-			object.Text = text
-		end
-	end)
-end
-
-local function applyPrivacyMode()
-	local word = string.char(78, 97, 109, 101)
+local function applyPrivacy()
+	local key = "Na" .. "me"
 	local playerGui = player:FindFirstChild("PlayerGui")
 	local playerData = playerGui and playerGui:FindFirstChild("PlayerData")
 	local frame = playerData and playerData:FindFirstChild("Frame")
 	local profileFrame = frame and frame:FindFirstChild("Profile")
 
-	setGuiHidden(profileFrame and profileFrame:FindFirstChild("Profile"))
-	setGuiLabel(frame and frame:FindFirstChild("Player" .. word), "KryptexScripts")
+	hideUiTarget(profileFrame and profileFrame:FindFirstChild("Profile"))
+	hideUiTarget(frame and frame:FindFirstChild("Player" .. key))
 
-	local character = player.Character
+	local character = player.Character or Workspace:FindFirstChild(player.Name)
 	local root = character and character:FindFirstChild("HumanoidRootPart")
-	local plate = root and root:FindFirstChild("Main" .. word .. "plate")
+	local plate = root and root:FindFirstChild("Main" .. key .. "plate")
 
 	if plate then
-		setGuiHidden(plate:FindFirstChild("Guildtag", true))
-		setGuiHidden(plate:FindFirstChild("Player" .. word, true))
+		hideUiTarget(plate:FindFirstChild("Guildtag", true))
+		hideUiTarget(plate:FindFirstChild("Player" .. key, true))
 	end
 end
 
-local function setPrivacyMode(value)
-	settings.PrivacyMode = value
+local function setPrivacy(value)
+	settings.Privacy = value
 
 	if value then
-		applyPrivacyMode()
+		pcall(applyPrivacy)
 	end
 end
 
@@ -2027,8 +2018,8 @@ local function startPrivacyLoop()
 
 	task.spawn(function()
 		while task.wait(1) do
-			if settings.PrivacyMode then
-				pcall(applyPrivacyMode)
+			if settings.Privacy then
+				pcall(applyPrivacy)
 			end
 		end
 	end)
@@ -2354,14 +2345,24 @@ local function getEphrathEnemy()
 end
 
 local function teleportToCFrame(cframe)
-	local root = getRoot()
-	root.AssemblyLinearVelocity = Vector3.zero
-	root.AssemblyAngularVelocity = Vector3.zero
-	root.CFrame = cframe
+	local ok = pcall(function()
+		local character = player.Character or player.CharacterAdded:Wait()
+		local root = character:FindFirstChild("HumanoidRootPart") or character:WaitForChild("HumanoidRootPart", 5)
+
+		if not root or not root.Parent then
+			error("HumanoidRootPart not available")
+		end
+
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+		root.CFrame = cframe
+	end)
+
+	return ok
 end
 
 local function teleportToZurielClearPosition()
-	teleportToCFrame(CFrame.new(ZURIEL_CLEAR_POSITION))
+	return teleportToCFrame(CFrame.new(ZURIEL_CLEAR_POSITION))
 end
 
 local function updateZurielClearTeleport()
@@ -2371,11 +2372,16 @@ local function updateZurielClearTeleport()
 	if zurielAlive then
 		zurielSeenAlive = true
 		zurielTeleportDone = false
-	elseif (zurielSeenAlive or zuriel) and not zurielTeleportDone then
-		teleportToZurielClearPosition()
-		zurielTeleportDone = true
-		zurielSeenAlive = false
-		notify("First Boss", "Zuriel cleared. Teleported to next position.")
+		zurielTeleportPending = false
+	elseif (zurielSeenAlive or zuriel or zurielTeleportPending) and not zurielTeleportDone then
+		if teleportToZurielClearPosition() then
+			zurielTeleportDone = true
+			zurielTeleportPending = false
+			zurielSeenAlive = false
+			notify("First Boss", "Zuriel cleared. Teleported to next position.")
+		else
+			zurielTeleportPending = true
+		end
 	end
 end
 
@@ -2543,6 +2549,7 @@ local function setAutoFarm(value)
 		lastSkillPoint = 0
 		zurielSeenAlive = false
 		zurielTeleportDone = false
+		zurielTeleportPending = false
 		ephrathSeenAlive = false
 		ephrathTeleportDone = false
 		ephrathTeleportAt = 0
@@ -3115,11 +3122,11 @@ SettingsTab:CreateToggle({
 SettingsTab:CreateSection("Privacy")
 
 SettingsTab:CreateToggle({
-	Name = "Privacy Mode",
-	CurrentValue = settings.PrivacyMode,
-	Flag = "PrivacyMode",
+	Name = "Privacy",
+	CurrentValue = settings.Privacy,
+	Flag = "Privacy",
 	Callback = function(value)
-		setPrivacyMode(value)
+		setPrivacy(value)
 	end,
 })
 
@@ -3214,7 +3221,7 @@ end
 
 local function syncSavedSettings()
 	settings.SoloSafetyPause = getFlagValue("SoloSafetyPause", settings.SoloSafetyPause)
-	setPrivacyMode(getFlagValue("PrivacyMode", settings.PrivacyMode))
+	setPrivacy(getFlagValue("Privacy", settings.Privacy))
 	settings.AutoStartOnExecute = getFlagValue("AutoStartOnExecute", settings.AutoStartOnExecute)
 	settings.AutoCreateAndStartDungeon = getFlagValue("AutoCreateAndStartDungeon", settings.AutoCreateAndStartDungeon)
 	settings.AutoCast = getFlagValue("AutoCastSkills", settings.AutoCast)
